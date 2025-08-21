@@ -618,17 +618,18 @@ def pagina_dashboard():
         csv = dff.to_csv(index=False).encode("utf-8")
         st.download_button("⬇️ Baixar CSV", data=csv, file_name="abastecimentos_filtrado.csv", mime="text/csv")
     with colx2:
-        # Excel em memória
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-            dff.to_excel(writer, index=False, sheet_name="Dados")
-            df_mes_litros.to_excel(writer, index=False, sheet_name="Litros_Mensal")
-            df_mes_valor.to_excel(writer, index=False, sheet_name="Valor_Mensal")
-            if preco_mes is not None:
-                preco_mes.to_excel(writer, index=False, sheet_name="Preco_Medio")
-        st.download_button("⬇️ Baixar Excel", data=buffer.getvalue(),
-                           file_name="abastecimentos_filtrado.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        # Excel em memória com fallback para engines disponíveis (to_excel_bytes)
+        sheets = {"Dados": dff, "Litros_Mensal": df_mes_litros, "Valor_Mensal": df_mes_valor}
+        if preco_mes is not None:
+            sheets["Preco_Medio"] = preco_mes
+
+        excel_bytes, engine_used = to_excel_bytes(sheets)
+        if excel_bytes is not None:
+            st.download_button("⬇️ Baixar Excel", data=excel_bytes,
+                               file_name="abastecimentos_filtrado.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        else:
+            st.warning("Não foi possível gerar .xlsx (xlsxwriter/openpyxl não disponíveis). Use o CSV ou instale 'xlsxwriter' ou 'openpyxl'.")
 
     st.markdown("### 📋 Tabela (dados filtrados)")
     display_df = dff.copy()
