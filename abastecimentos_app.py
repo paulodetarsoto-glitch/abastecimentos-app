@@ -716,196 +716,152 @@ def pagina_dashboard():
         display_df = display_df[cols]
     st.dataframe(display_df.sort_values("data", ascending=False), use_container_width=True)
 
+def generate_request_pdf(payload: dict) -> bytes:
+    """
+    Gera PDF da requisição a partir do dict payload e retorna bytes.
+    Campos esperados: placa, justificativa, supervisor, setor, litros, combustivel, posto, solicitante, data
+    """
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    except Exception as e:
+        raise RuntimeError("reportlab não disponível: instale com `pip install reportlab`") from e
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title = Paragraph("Requisição de Abastecimento", styles['Title'])
+    story.append(title)
+    story.append(Spacer(1, 12))
+
+    meta = [
+        ["Data:", payload.get("data", "")],
+        ["Posto destino:", payload.get("posto", "")],
+        ["Placa:", payload.get("placa", "")],
+        ["Supervisor:", payload.get("supervisor", "")],
+        ["Setor:", payload.get("setor", "")],
+        ["Quantidade (L):", str(payload.get("litros", ""))],
+        ["Combustível:", payload.get("combustivel", "")]
+    ]
+    tbl = Table(meta, colWidths=[110, 380])
+    tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
+        ('INNERGRID', (0,0), (-1,-1), 0.25, colors.grey),
+        ('BOX', (0,0), (-1,-1), 0.5, colors.black),
+        ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+        ('FONTNAME', (0,0), (-1,-1), 'Helvetica')
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 16))
+
+    story.append(Paragraph("<b>Justificativa</b>", styles['Heading3']))
+    justificativa = Paragraph(payload.get("justificativa", "").replace("\n","<br/>"), styles['Normal'])
+    story.append(justificativa)
+    story.append(Spacer(1, 24))
+
+    story.append(Paragraph(f"Solicitado por: {payload.get('solicitante','')}", styles['Normal']))
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("Assinatura: ____________________________", styles['Normal']))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 def pagina_email():
-    st.header("✉️ Relatórios & E-mail")
-    st.info("Envie uma requisição de abastecimento por e-mail ao posto selecionado. Você pode salvar o e-mail do posto para uso futuro.")
-    st.markdown('''
-    **Instruções rápidas SMTP**
+    st.header("✉️ Enviar Requisição de Abastecimento em PDF ao Posto")
+    st.info("Preencha os dados abaixo para gerar e enviar a ficha de requisição em PDF diretamente ao e-mail do posto selecionado.")
 
-    - Para Gmail: crie uma 'App Password' e use o e-mail como usuário e a app password como senha.
-    - Servidor: smtp.gmail.com, Porta TLS: 587.
-    - Não guarde senhas em arquivos; o app armazena apenas em sessão para conveniência.
-    ''')
+    # Campos principais da requisição
+    with st.form("form_requisicao_pdf"):
+        st.subheader("Dados da Requisição")
 
-    # Carrega lista de postos a partir dos abastecimentos
-    conn = get_connection()
-    postos_df = pd.read_sql('SELECT DISTINCT Posto as posto FROM abastecimentos WHERE Posto IS NOT NULL AND Posto != ""', conn)
-    conn.close()
-    postos = sorted(postos_df['posto'].dropna().unique().tolist()) if not postos_df.empty else []
+        col1, col2 = st.columns(2)
+        with col1:
+            placa = st.text_input("Placa do veículo")
+            supervisor = st.text_input("Supervisor responsável")
+            setor = st.text_input("Setor")
+        with col2:
+            litros = st.number_input("Quantidade de litros", min_value=0.0, step=0.1)
+            combustivel = st.selectbox("Tipo de combustível", ["Gasolina", "Etanol", "Diesel S10", "Diesel S500", "GNV"])
+        
+        justificativa = st.text_area("Justificativa", height=100)
 
-    if not postos:
-        st.warning('Nenhum posto cadastrado nos abastecimentos. Registre pelo menos um abastecimento com o nome do posto antes de enviar e-mails.')
-        return
+        st.markdown("---")
+        st.subheader("Informações de E-mail")
 
-    col1, col2 = st.columns([2,1])
-    with col1:
-        posto_sel = st.selectbox('Posto', ['Selecionar...'] + postos)
-    with col2:
-        search = st.text_input('Pesquisar posto')
+        # Dados do remetente pré-preenchidos
+        nosso_email = st.text_input("Nosso Email (remetente)", value="juniorsantos.ag@hotmail.com", disabled=True)
+        smtp_password = st.text_input("Senha do Email", value="Junior2904*", type="password", disabled=True)
+        smtp_server = st.text_input("Servidor SMTP", value="smtp-mail.outlook.com", disabled=True)
+        smtp_port = st.text_input("Porta SMTP", value="587", disabled=True)
+        st.markdown("Criptografia: **STARTTLS** (já configurado)")
 
-    if search:
-        postos_filtrados = [p for p in postos if search.lower() in p.lower()]
-        if postos_filtrados:
-            posto_sel = st.selectbox('Posto (filtrado)', ['Selecionar...'] + postos_filtrados, key='posto_filtrado')
+        # E-mail do posto (destinatário)
+        email_posto = st.text_input("E-mail do posto (destino)", value="", help="Digite o e-mail do posto que receberá a requisição.")
 
-    if posto_sel and posto_sel != 'Selecionar...':
-        # Carrega email salvo se existir
-        emails_df = get_postos_emails()
-        email_saved = ''
-        if not emails_df.empty:
-            row = emails_df.loc[emails_df['posto'] == posto_sel]
-            if not row.empty:
-                email_saved = row['email'].iloc[0]
+        enviar = st.form_submit_button("Enviar Requisição em PDF")
 
-        st.markdown('---')
-        st.subheader(f'Enviar requisição para: {posto_sel}')
+        if enviar:
+            # Validações
+            if not placa.strip():
+                st.error("Informe a placa do veículo.")
+            elif not supervisor.strip():
+                st.error("Informe o supervisor responsável.")
+            elif not setor.strip():
+                st.error("Informe o setor.")
+            elif litros <= 0:
+                st.error("Informe a quantidade de litros (maior que zero).")
+            elif not email_posto.strip():
+                st.error("Informe o e-mail do posto.")
+            else:
+                payload = {
+                    "data": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "posto": "",  # opcional, pode ser preenchido se desejar
+                    "placa": placa.strip(),
+                    "supervisor": supervisor.strip(),
+                    "setor": setor.strip(),
+                    "litros": litros,
+                    "combustivel": combustivel,
+                    "justificativa": justificativa.strip(),
+                    "solicitante": nosso_email
+                }
+                try:
+                    pdf_bytes = generate_request_pdf(payload)
+                except Exception as e:
+                    st.error(f"Erro ao gerar PDF: {e}")
+                    pdf_bytes = None
 
-        with st.form('form_email_posto'):
-            to_email = st.text_input('E-mail do posto', value=email_saved)
-            assunto = st.text_input('Assunto', value=f'Requisição de Abastecimento - {posto_sel}')
-            mensagem = st.text_area('Mensagem', value=f'Prezados,\n\nSolicitamos abastecimento para o posto {posto_sel}. Favor confirmar o recebimento desta requisição.\n\nAtenciosamente,')
+                if pdf_bytes:
+                    fname = f"requisicao_{placa.strip()}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+                    smtp_conf = {
+                        'server': smtp_server,
+                        'port': int(smtp_port),
+                        'user': nosso_email.strip(),
+                        'password': smtp_password.strip(),
+                        'use_tls': True
+                    }
+                    subject = f"Requisição de Abastecimento - Placa {placa.strip()}"
+                    body = f"Prezados,\n\nSegue em anexo a requisição de abastecimento do veículo {placa.strip()}.\n\nAtenciosamente."
 
-            enviar_html = st.checkbox('Enviar em HTML com resumo (KPIs)', value=False)
-
-            st.markdown('#### Configuração SMTP (opcional)')
-            smtp_user = st.text_input('SMTP Usuário (e-mail remetente)', value=st.session_state.get('smtp_user') if 'smtp_user' in st.session_state else '')
-            smtp_password = st.text_input('SMTP Senha / App Password', type='password', value=st.session_state.get('smtp_password') if 'smtp_password' in st.session_state else '')
-            smtp_server = st.text_input('SMTP Server', value=st.session_state.get('smtp_server', 'smtp.gmail.com'))
-            smtp_port = st.number_input('SMTP Port', value=st.session_state.get('smtp_port', 587), step=1)
-            use_tls = st.checkbox('Usar TLS', value=True)
-
-            qty = st.number_input('Quantidade de registros para anexar (últimos)', min_value=1, max_value=1000, value=50)
-
-            btn_save = st.form_submit_button('Salvar e-mail do posto')
-            btn_send = st.form_submit_button('Enviar e-mail agora')
-
-            if btn_save:
-                if not posto_sel or posto_sel == 'Selecionar...':
-                    st.error('Selecione um posto válido antes de salvar.')
-                elif not to_email.strip():
-                    st.error('Preencha o e-mail do posto antes de salvar.')
-                else:
-                    save_posto_email(posto_sel, to_email.strip())
-                    st.success('✅ E-mail salvo para o posto.')
-
-            if btn_send:
-                if not to_email.strip():
-                    st.error('Preencha o e-mail do posto antes de enviar.')
-                elif not smtp_user.strip() or not smtp_password.strip():
-                    st.error('Informe usuário e senha SMTP (senha de app para Gmail recomendado).')
-                else:
-                    # Gera filtrado pelos últimos 'qty' abastecimentos do posto
-                    conn = get_connection()
-                    df_ab = pd.read_sql('SELECT * FROM abastecimentos WHERE Posto = ? ORDER BY data DESC LIMIT ?', conn, params=(posto_sel, qty))
-                    conn.close()
-                    if df_ab.empty:
-                        st.warning('Não foram encontrados abastecimentos para o posto selecionado.')
+                    with st.spinner("Enviando e-mail com PDF..."):
+                        ok, err = send_email_smtp(
+                            to_address=email_posto.strip(),
+                            subject=subject,
+                            body=body,
+                            html_body=None,
+                            attachment_bytes=pdf_bytes,
+                            attachment_name=fname,
+                            smtp_config=smtp_conf
+                        )
+                    if ok:
+                        st.success("✅ Requisição enviada com sucesso ao posto!")
                     else:
-                        # Preparar anexos (CSV + Excel se possível)
-                        csv_bytes = df_ab.to_csv(index=False).encode('utf-8')
-                        st.download_button("⬇️ Baixar CSV", data=csv_bytes, file_name=f"abastecimentos_{posto_sel}.csv", mime="text/csv")
+                        st.error(f"Falha ao enviar: {err}")
 
-                        sheets = {"Abastecimentos": df_ab}
-                        excel_bytes, engine_used = to_excel_bytes(sheets)
-                        if excel_bytes is not None:
-                            st.download_button("⬇️ Baixar Excel", data=excel_bytes, file_name=f"abastecimentos_{posto_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                            attachment_bytes = excel_bytes
-                            attachment_name = f"abastecimentos_{posto_sel}.xlsx"
-                        else:
-                            st.info("Gerar .xlsx requer 'xlsxwriter' ou 'openpyxl' instalados. Será usado CSV como anexo.")
-                            attachment_bytes = csv_bytes
-                            attachment_name = f"abastecimentos_{posto_sel}.csv"
-
-                        smtp_conf = {
-                            'server': smtp_server,
-                            'port': int(smtp_port),
-                            'user': smtp_user.strip(),
-                            'password': smtp_password.strip(),
-                            'use_tls': use_tls
-                        }
-
-                        # monta corpo HTML se solicitado
-                        html_body = None
-                        if enviar_html:
-                            try:
-                                df_temp = df_ab.copy()
-                                df_temp.columns = [c.strip().lower() for c in df_temp.columns]
-                                total_litros = float(df_temp['total_litros'].sum()) if 'total_litros' in df_temp.columns else 0.0
-                                total_valor = float(df_temp['valor_total'].sum()) if 'valor_total' in df_temp.columns else 0.0
-                                n_ab = int(len(df_temp))
-                                preco_medio = (total_valor / total_litros) if total_litros > 0 else 0.0
-
-                                cols_for_table = []
-                                for col in ('data', 'placa', 'condutor', 'total_litros', 'valor_total'):
-                                    if col in df_temp.columns:
-                                        cols_for_table.append(col)
-
-                                top5 = df_temp.head(5)
-                                table_rows = ''
-                                for _, r in top5.iterrows():
-                                    cells = []
-                                    for c in cols_for_table:
-                                        v = r.get(c, '')
-                                        if pd.isna(v):
-                                            v = ''
-                                        if c == 'total_litros':
-                                            try: v = f"{float(v):,.2f}"
-                                            except: pass
-                                        if c == 'valor_total':
-                                            try: v = f"R$ {float(v):,.2f}"
-                                            except: pass
-                                        cells.append(f"<td>{v}</td>")
-                                    table_rows += f"<tr>{''.join(cells)}</tr>"
-
-                                html_body = f"""
-                                <html>
-                                    <head><style>
-                                        body {{ font-family: Arial, sans-serif; color: #111; }}
-                                        .kpi {{ background: #f3f6fb; padding: 10px; border-radius:6px; display:inline-block; margin-right:8px; }}
-                                        table {{ border-collapse: collapse; width: 100%; max-width: 700px; }}
-                                        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                                        th {{ background: #1F77B4; color: white; }}
-                                    </style></head>
-                                    <body>
-                                        <p>Prezados,</p>
-                                        <p>Solicitamos abastecimento para o posto <b>{posto_sel}</b>. Segue abaixo um resumo dos últimos {n_ab} abastecimentos e os 5 mais recentes:</p>
-                                        <div>
-                                            <span class="kpi"><b>Total litros:</b> {total_litros:,.2f} L</span>
-                                            <span class="kpi"><b>Total gasto:</b> R$ {total_valor:,.2f}</span>
-                                            <span class="kpi"><b>Preço médio:</b> R$ {preco_medio:.2f}</span>
-                                            <span class="kpi"><b>Registros:</b> {n_ab}</span>
-                                        </div>
-                                        <br/>
-                                        <table>
-                                            <thead><tr>{''.join([f'<th>{c.title()}</th>' for c in cols_for_table])}</tr></thead>
-                                            <tbody>{table_rows}</tbody>
-                                        </table>
-                                        <p>Detalhes completos na planilha anexada.</p>
-                                        <p>Atenciosamente,</p>
-                                    </body>
-                                </html>
-                                """
-                            except Exception:
-                                html_body = None
-
-                        with st.spinner('Enviando e-mail com anexo...'):
-                            ok, err = send_email_smtp(
-                                to_address=to_email.strip(),
-                                subject=assunto,
-                                body=(mensagem if not enviar_html else ''),
-                                html_body=html_body,
-                                attachment_bytes=attachment_bytes,
-                                attachment_name=attachment_name,
-                                smtp_config=smtp_conf
-                            )
-                        if ok:
-                            st.success('✅ E-mail enviado com sucesso!')
-                            st.session_state['smtp_user'] = smtp_user
-                            st.session_state['smtp_server'] = smtp_server
-                            st.session_state['smtp_port'] = int(smtp_port)
-                        else:
-                            st.error(f'Falha ao enviar e-mail: {err}')
-# ...existing code...
 # Menu
 # ===========================
 def main():
