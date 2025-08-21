@@ -801,11 +801,21 @@ def pagina_email():
                     if df_ab.empty:
                         st.warning('Não foram encontrados abastecimentos para o posto selecionado.')
                     else:
-                        # Gera Excel em memória
-                        buffer = io.BytesIO()
-                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                            df_ab.to_excel(writer, index=False, sheet_name='Abastecimentos')
-                        excel_bytes = buffer.getvalue()
+                        # Preparar anexos (CSV + Excel se possível)
+                        csv_bytes = df_ab.to_csv(index=False).encode('utf-8')
+                        st.download_button("⬇️ Baixar CSV", data=csv_bytes, file_name=f"abastecimentos_{posto_sel}.csv", mime="text/csv")
+
+                        sheets = {"Abastecimentos": df_ab}
+                        excel_bytes, engine_used = to_excel_bytes(sheets)
+                        if excel_bytes is not None:
+                            st.download_button("⬇️ Baixar Excel", data=excel_bytes, file_name=f"abastecimentos_{posto_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                            attachment_bytes = excel_bytes
+                            attachment_name = f"abastecimentos_{posto_sel}.xlsx"
+                        else:
+                            st.info("Gerar .xlsx requer 'xlsxwriter' ou 'openpyxl' instalados. Será usado CSV como anexo.")
+                            attachment_bytes = csv_bytes
+                            attachment_name = f"abastecimentos_{posto_sel}.csv"
+
                         smtp_conf = {
                             'server': smtp_server,
                             'port': int(smtp_port),
@@ -817,271 +827,85 @@ def pagina_email():
                         # monta corpo HTML se solicitado
                         html_body = None
                         if enviar_html:
-                                                        try:
-                                                                df_temp = df_ab.copy()
-                                                                # normaliza nomes de colunas para facilitar acesso
-                                                                df_temp.columns = [c.strip().lower() for c in df_temp.columns]
-                                                                total_litros = float(df_temp['total_litros'].sum()) if 'total_litros' in df_temp.columns else 0.0
-                                                                total_valor = float(df_temp['valor_total'].sum()) if 'valor_total' in df_temp.columns else 0.0
-                                                                n_ab = int(len(df_temp))
-                                                                preco_medio = (total_valor / total_litros) if total_litros > 0 else 0.0
+                            try:
+                                df_temp = df_ab.copy()
+                                df_temp.columns = [c.strip().lower() for c in df_temp.columns]
+                                total_litros = float(df_temp['total_litros'].sum()) if 'total_litros' in df_temp.columns else 0.0
+                                total_valor = float(df_temp['valor_total'].sum()) if 'valor_total' in df_temp.columns else 0.0
+                                n_ab = int(len(df_temp))
+                                preco_medio = (total_valor / total_litros) if total_litros > 0 else 0.0
 
-                                                                # tabela com até 5 registros
-                                                                table_rows = ''
-                                                                cols_for_table = []
-                                                                # decides as colunas que provavelmente existem
-                                                                if 'data' in df_temp.columns:
-                                                                        cols_for_table.append('data')
-                                                                if 'placa' in df_temp.columns:
-                                                                        cols_for_table.append('placa')
-                                                                if 'condutor' in df_temp.columns:
-                                                                        cols_for_table.append('condutor')
-                                                                if 'total_litros' in df_temp.columns:
-                                                                        cols_for_table.append('total_litros')
-                                                                if 'valor_total' in df_temp.columns:
-                                                                        cols_for_table.append('valor_total')
+                                cols_for_table = []
+                                for col in ('data', 'placa', 'condutor', 'total_litros', 'valor_total'):
+                                    if col in df_temp.columns:
+                                        cols_for_table.append(col)
 
-                                                                top5 = df_temp.head(5)
-                                                                for _, r in top5.iterrows():
-                                                                        cells = []
-                                                                        for c in cols_for_table:
-                                                                                v = r.g                                                                                # ...existing code...
-                                                                                                    if df_ab.empty:
-                                                                                                        st.warning('Não foram encontrados abastecimentos para o posto selecionado.')
-                                                                                                    else:
-                                                                                -                        # Gera Excel em memória
-                                                                                -                        buffer = io.BytesIO()
-                                                                                -                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                                                                                -                            df_ab.to_excel(writer, index=False, sheet_name='Abastecimentos')
-                                                                                -                        excel_bytes = buffer.getvalue()
-                                                                                -                        smtp_conf = {
-                                                                                -                            'server': smtp_server,
-                                                                                -                            'port': int(smtp_port),
-                                                                                -                            'user': smtp_user.strip(),
-                                                                                -                            'password': smtp_password.strip(),
-                                                                                -                            'use_tls': use_tls
-                                                                                -                        }
-                                                                                +                        # Oferece downloads (CSV + Excel se possível) e prepara anexo para envio.
-                                                                                +                        csv_bytes = df_ab.to_csv(index=False).encode('utf-8')
-                                                                                +                        st.download_button("⬇️ Baixar CSV", data=csv_bytes, file_name=f"abastecimentos_{posto_sel}.csv", mime="text/csv")
-                                                                                +
-                                                                                +                        sheets = {"Abastecimentos": df_ab}
-                                                                                +                        excel_bytes, engine_used = to_excel_bytes(sheets)
-                                                                                +                        if excel_bytes is not None:
-                                                                                +                            st.download_button("⬇️ Baixar Excel", data=excel_bytes, file_name=f"abastecimentos_{posto_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                                                                                +                            attachment_bytes = excel_bytes
-                                                                                +                            attachment_name = f"abastecimentos_{posto_sel}.xlsx"
-                                                                                +                        else:
-                                                                                +                            st.info("Gerar .xlsx requer 'xlsxwriter' ou 'openpyxl' instalados. Será usado CSV como anexo.")
-                                                                                +                            attachment_bytes = csv_bytes
-                                                                                +                            attachment_name = f"abastecimentos_{posto_sel}.csv"
-                                                                                +
-                                                                                +                        smtp_conf = {
-                                                                                +                            'server': smtp_server,
-                                                                                +                            'port': int(smtp_port),
-                                                                                +                            'user': smtp_user.strip(),
-                                                                                +                            'password': smtp_password.strip(),
-                                                                                +                            'use_tls': use_tls
-                                                                                +                        }
-                                                                                ...
-                                                                                -                        with st.spinner('Enviando e-mail com anexo Excel...'):
-                                                                                -                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=excel_bytes, attachment_name=f'abastecimentos_{posto_sel}.xlsx', smtp_config=smtp_conf)
-                                                                                +                        with st.spinner('Enviando e-mail com anexo...'):
-                                                                                +                            ok, err = send_email_smtp(
-                                                                                +                                to_address=to_email.strip(),
-                                                                                +                                subject=assunto,
-                                                                                +                                body=(mensagem if not enviar_html else ''),
-                                                                                +                                html_body=html_body,
-                                                                                +                                attachment_bytes=attachment_bytes,
-                                                                                +                                attachment_name=attachment_name,
-                                                                                +                                smtp_config=smtp_conf
-                                                                                +                            )
-                                                                                                        if ok:
-                                                                                                            st.success('✅ E-mail enviado com sucesso!')
-                                                                                                            # guarda credenciais mínimas na sessão para facilitar (não persiste em disco)
-                                                                                                            st.session_state['smtp_user'] = smtp_user
-                                                                                                            st.session_state['smtp_server'] = smtp_server
-                                                                                                            st.session_state['smtp_port'] = int(smtp_port)
-                                                                                                        else:
-                                                                                                            st.error(f'Falha ao enviar e-mail: {err}')                                                                                                            # ...existing code...
-                                                                                                                                if df_ab.empty:
-                                                                                                                                    st.warning('Não foram encontrados abastecimentos para o posto selecionado.')
-                                                                                                                                else:
-                                                                                                            -                        # Gera Excel em memória
-                                                                                                            -                        buffer = io.BytesIO()
-                                                                                                            -                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                                                                                                            -                            df_ab.to_excel(writer, index=False, sheet_name='Abastecimentos')
-                                                                                                            -                        excel_bytes = buffer.getvalue()
-                                                                                                            -                        smtp_conf = {
-                                                                                                            -                            'server': smtp_server,
-                                                                                                            -                            'port': int(smtp_port),
-                                                                                                            -                            'user': smtp_user.strip(),
-                                                                                                            -                            'password': smtp_password.strip(),
-                                                                                                            -                            'use_tls': use_tls
-                                                                                                            -                        }
-                                                                                                            +                        # Oferece downloads (CSV + Excel se possível) e prepara anexo para envio.
-                                                                                                            +                        csv_bytes = df_ab.to_csv(index=False).encode('utf-8')
-                                                                                                            +                        st.download_button("⬇️ Baixar CSV", data=csv_bytes, file_name=f"abastecimentos_{posto_sel}.csv", mime="text/csv")
-                                                                                                            +
-                                                                                                            +                        sheets = {"Abastecimentos": df_ab}
-                                                                                                            +                        excel_bytes, engine_used = to_excel_bytes(sheets)
-                                                                                                            +                        if excel_bytes is not None:
-                                                                                                            +                            st.download_button("⬇️ Baixar Excel", data=excel_bytes, file_name=f"abastecimentos_{posto_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                                                                                                            +                            attachment_bytes = excel_bytes
-                                                                                                            +                            attachment_name = f"abastecimentos_{posto_sel}.xlsx"
-                                                                                                            +                        else:
-                                                                                                            +                            st.info("Gerar .xlsx requer 'xlsxwriter' ou 'openpyxl' instalados. Será usado CSV como anexo.")
-                                                                                                            +                            attachment_bytes = csv_bytes
-                                                                                                            +                            attachment_name = f"abastecimentos_{posto_sel}.csv"
-                                                                                                            +
-                                                                                                            +                        smtp_conf = {
-                                                                                                            +                            'server': smtp_server,
-                                                                                                            +                            'port': int(smtp_port),
-                                                                                                            +                            'user': smtp_user.strip(),
-                                                                                                            +                            'password': smtp_password.strip(),
-                                                                                                            +                            'use_tls': use_tls
-                                                                                                            +                        }
-                                                                                                            ...
-                                                                                                            -                        with st.spinner('Enviando e-mail com anexo Excel...'):
-                                                                                                            -                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=excel_bytes, attachment_name=f'abastecimentos_{posto_sel}.xlsx', smtp_config=smtp_conf)
-                                                                                                            +                        with st.spinner('Enviando e-mail com anexo...'):
-                                                                                                            +                            ok, err = send_email_smtp(
-                                                                                                            +                                to_address=to_email.strip(),
-                                                                                                            +                                subject=assunto,
-                                                                                                            +                                body=(mensagem if not enviar_html else ''),
-                                                                                                            +                                html_body=html_body,
-                                                                                                            +                                attachment_bytes=attachment_bytes,
-                                                                                                            +                                attachment_name=attachment_name,
-                                                                                                            +                                smtp_config=smtp_conf
-                                                                                                            +                            )
-                                                                                                                                    if ok:
-                                                                                                                                        st.success('✅ E-mail enviado com sucesso!')
-                                                                                                                                        # guarda credenciais mínimas na sessão para facilitar (não persiste em disco)
-                                                                                                                                        st.session_state['smtp_user'] = smtp_user
-                                                                                                                                        st.session_state['smtp_server'] = smtp_server
-                                                                                                                                        st.session_state['smtp_port'] = int(smtp_port)
-                                                                                                                                    else:
-                                                                                                                                        st.error(f'Falha ao enviar e-mail: {err}')                                                                                                                                        # ...existing code...
-                                                                                                                                                            if df_ab.empty:
-                                                                                                                                                                st.warning('Não foram encontrados abastecimentos para o posto selecionado.')
-                                                                                                                                                            else:
-                                                                                                                                        -                        # Gera Excel em memória
-                                                                                                                                        -                        buffer = io.BytesIO()
-                                                                                                                                        -                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                                                                                                                                        -                            df_ab.to_excel(writer, index=False, sheet_name='Abastecimentos')
-                                                                                                                                        -                        excel_bytes = buffer.getvalue()
-                                                                                                                                        -                        smtp_conf = {
-                                                                                                                                        -                            'server': smtp_server,
-                                                                                                                                        -                            'port': int(smtp_port),
-                                                                                                                                        -                            'user': smtp_user.strip(),
-                                                                                                                                        -                            'password': smtp_password.strip(),
-                                                                                                                                        -                            'use_tls': use_tls
-                                                                                                                                        -                        }
-                                                                                                                                        +                        # Oferece downloads (CSV + Excel se possível) e prepara anexo para envio.
-                                                                                                                                        +                        csv_bytes = df_ab.to_csv(index=False).encode('utf-8')
-                                                                                                                                        +                        st.download_button("⬇️ Baixar CSV", data=csv_bytes, file_name=f"abastecimentos_{posto_sel}.csv", mime="text/csv")
-                                                                                                                                        +
-                                                                                                                                        +                        sheets = {"Abastecimentos": df_ab}
-                                                                                                                                        +                        excel_bytes, engine_used = to_excel_bytes(sheets)
-                                                                                                                                        +                        if excel_bytes is not None:
-                                                                                                                                        +                            st.download_button("⬇️ Baixar Excel", data=excel_bytes, file_name=f"abastecimentos_{posto_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                                                                                                                                        +                            attachment_bytes = excel_bytes
-                                                                                                                                        +                            attachment_name = f"abastecimentos_{posto_sel}.xlsx"
-                                                                                                                                        +                        else:
-                                                                                                                                        +                            st.info("Gerar .xlsx requer 'xlsxwriter' ou 'openpyxl' instalados. Será usado CSV como anexo.")
-                                                                                                                                        +                            attachment_bytes = csv_bytes
-                                                                                                                                        +                            attachment_name = f"abastecimentos_{posto_sel}.csv"
-                                                                                                                                        +
-                                                                                                                                        +                        smtp_conf = {
-                                                                                                                                        +                            'server': smtp_server,
-                                                                                                                                        +                            'port': int(smtp_port),
-                                                                                                                                        +                            'user': smtp_user.strip(),
-                                                                                                                                        +                            'password': smtp_password.strip(),
-                                                                                                                                        +                            'use_tls': use_tls
-                                                                                                                                        +                        }
-                                                                                                                                        ...
-                                                                                                                                        -                        with st.spinner('Enviando e-mail com anexo Excel...'):
-                                                                                                                                        -                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=excel_bytes, attachment_name=f'abastecimentos_{posto_sel}.xlsx', smtp_config=smtp_conf)
-                                                                                                                                        +                        with st.spinner('Enviando e-mail com anexo...'):
-                                                                                                                                        +                            ok, err = send_email_smtp(
-                                                                                                                                        +                                to_address=to_email.strip(),
-                                                                                                                                        +                                subject=assunto,
-                                                                                                                                        +                                body=(mensagem if not enviar_html else ''),
-                                                                                                                                        +                                html_body=html_body,
-                                                                                                                                        +                                attachment_bytes=attachment_bytes,
-                                                                                                                                        +                                attachment_name=attachment_name,
-                                                                                                                                        +                                smtp_config=smtp_conf
-                                                                                                                                        +                            )
-                                                                                                                                                                if ok:
-                                                                                                                                                                    st.success('✅ E-mail enviado com sucesso!')
-                                                                                                                                                                    # guarda credenciais mínimas na sessão para facilitar (não persiste em disco)
-                                                                                                                                                                    st.session_state['smtp_user'] = smtp_user
-                                                                                                                                                                    st.session_state['smtp_server'] = smtp_server
-                                                                                                                                                                    st.session_state['smtp_port'] = int(smtp_port)
-                                                                                                                                                                else:
-                                                                                                                                                                    st.error(f'Falha ao enviar e-mail: {err}')et(c, '')
-                                                                                if pd.isna(v):
-                                                                                        v = ''
-                                                                                # formata numericos
-                                                                                if c in ('total_litros',):
-                                                                                        try: v = f"{float(v):,.2f}"
-                                                                                        except: pass
-                                                                                if c in ('valor_total',):
-                                                                                        try: v = f"R$ {float(v):,.2f}"
-                                                                                        except: pass
-                                                                                cells.append(f"<td>{v}</td>")
-                                                                        table_rows += f"<tr>{''.join(cells)}</tr>"
+                                top5 = df_temp.head(5)
+                                table_rows = ''
+                                for _, r in top5.iterrows():
+                                    cells = []
+                                    for c in cols_for_table:
+                                        v = r.get(c, '')
+                                        if pd.isna(v):
+                                            v = ''
+                                        if c == 'total_litros':
+                                            try: v = f"{float(v):,.2f}"
+                                            except: pass
+                                        if c == 'valor_total':
+                                            try: v = f"R$ {float(v):,.2f}"
+                                            except: pass
+                                        cells.append(f"<td>{v}</td>")
+                                    table_rows += f"<tr>{''.join(cells)}</tr>"
 
-                                                                # monta HTML com estilo simples
-                                                                html_body = f"""
-                                                                <html>
-                                                                    <head>
-                                                                        <style>
-                                                                            body {{ font-family: Arial, sans-serif; color: #111; }}
-                                                                            .kpi {{ background: #f3f6fb; padding: 10px; border-radius:6px; display:inline-block; margin-right:8px; }}
-                                                                            table {{ border-collapse: collapse; width: 100%; max-width: 700px; }}
-                                                                            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                                                                            th {{ background: #1F77B4; color: white; }}
-                                                                        </style>
-                                                                    </head>
-                                                                    <body>
-                                                                        <p>Prezados,</p>
-                                                                        <p>Solicitamos abastecimento para o posto <b>{posto_sel}</b>. Segue abaixo um resumo dos últimos {n_ab} abastecimentos e os 5 mais recentes:</p>
-                                                                        <div>
-                                                                            <span class="kpi"><b>Total litros:</b> {total_litros:,.2f} L</span>
-                                                                            <span class="kpi"><b>Total gasto:</b> R$ {total_valor:,.2f}</span>
-                                                                            <span class="kpi"><b>Preço médio:</b> R$ {preco_medio:.2f}</span>
-                                                                            <span class="kpi"><b>Registros:</b> {n_ab}</span>
-                                                                        </div>
-                                                                        <br/>
-                                                                        <table>
-                                                                            <thead>
-                                                                                <tr>{''.join([f'<th>{c.title()}</th>' for c in cols_for_table])}</tr>
-                                                                            </thead>
-                                                                            <tbody>
-                                                                                {table_rows}
-                                                                            </tbody>
-                                                                        </table>
-                                                                        <p>Detalhes completos na planilha anexada.</p>
-                                                                        <p>Atenciosamente,</p>
-                                                                    </body>
-                                                                </html>
-                                                                """
-                                                        except Exception:
-                                                                html_body = None
+                                html_body = f"""
+                                <html>
+                                    <head><style>
+                                        body {{ font-family: Arial, sans-serif; color: #111; }}
+                                        .kpi {{ background: #f3f6fb; padding: 10px; border-radius:6px; display:inline-block; margin-right:8px; }}
+                                        table {{ border-collapse: collapse; width: 100%; max-width: 700px; }}
+                                        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                                        th {{ background: #1F77B4; color: white; }}
+                                    </style></head>
+                                    <body>
+                                        <p>Prezados,</p>
+                                        <p>Solicitamos abastecimento para o posto <b>{posto_sel}</b>. Segue abaixo um resumo dos últimos {n_ab} abastecimentos e os 5 mais recentes:</p>
+                                        <div>
+                                            <span class="kpi"><b>Total litros:</b> {total_litros:,.2f} L</span>
+                                            <span class="kpi"><b>Total gasto:</b> R$ {total_valor:,.2f}</span>
+                                            <span class="kpi"><b>Preço médio:</b> R$ {preco_medio:.2f}</span>
+                                            <span class="kpi"><b>Registros:</b> {n_ab}</span>
+                                        </div>
+                                        <br/>
+                                        <table>
+                                            <thead><tr>{''.join([f'<th>{c.title()}</th>' for c in cols_for_table])}</tr></thead>
+                                            <tbody>{table_rows}</tbody>
+                                        </table>
+                                        <p>Detalhes completos na planilha anexada.</p>
+                                        <p>Atenciosamente,</p>
+                                    </body>
+                                </html>
+                                """
+                            except Exception:
+                                html_body = None
 
-                        with st.spinner('Enviando e-mail com anexo Excel...'):
-                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=excel_bytes, attachment_name=f'abastecimentos_{posto_sel}.xlsx', smtp_config=smtp_conf)
+                        with st.spinner('Enviando e-mail com anexo...'):
+                            ok, err = send_email_smtp(
+                                to_address=to_email.strip(),
+                                subject=assunto,
+                                body=(mensagem if not enviar_html else ''),
+                                html_body=html_body,
+                                attachment_bytes=attachment_bytes,
+                                attachment_name=attachment_name,
+                                smtp_config=smtp_conf
+                            )
                         if ok:
                             st.success('✅ E-mail enviado com sucesso!')
-                            # guarda credenciais mínimas na sessão para facilitar (não persiste em disco)
                             st.session_state['smtp_user'] = smtp_user
                             st.session_state['smtp_server'] = smtp_server
                             st.session_state['smtp_port'] = int(smtp_port)
                         else:
                             st.error(f'Falha ao enviar e-mail: {err}')
-
-# ===========================
+# ...existing code...
 # Menu
 # ===========================
 def main():
