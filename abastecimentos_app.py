@@ -126,59 +126,59 @@ def to_excel_bytes(sheets: dict, engine_order=('xlsxwriter', 'openpyxl')):
                         if df_ab.empty:
                             st.warning('Não foram encontrados abastecimentos para o posto selecionado.')
                         else:
--                        # Gera Excel em memória
--                        buffer = io.BytesIO()
--                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
--                            df_ab.to_excel(writer, index=False, sheet_name='Abastecimentos')
--                        excel_bytes = buffer.getvalue()
--                        smtp_conf = {
--                            'server': smtp_server,
--                            'port': int(smtp_port),
--                            'user': smtp_user.strip(),
--                            'password': smtp_password.strip(),
--                            'use_tls': use_tls
--                        }
-+                        # Oferece downloads (CSV + Excel se possível) e prepara anexo para envio.
-+                        csv_bytes = df_ab.to_csv(index=False).encode('utf-8')
-+                        st.download_button("⬇️ Baixar CSV", data=csv_bytes, file_name=f"abastecimentos_{posto_sel}.csv", mime="text/csv")
-+
-+                        sheets = {"Abastecimentos": df_ab}
-+                        excel_bytes, engine_used = to_excel_bytes(sheets)
-+                        if excel_bytes is not None:
-+                            st.download_button("⬇️ Baixar Excel", data=excel_bytes, file_name=f"abastecimentos_{posto_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-+                            attachment_bytes = excel_bytes
-+                            attachment_name = f"abastecimentos_{posto_sel}.xlsx"
-+                        else:
-+                            st.info("Gerar .xlsx requer 'xlsxwriter' ou 'openpyxl' instalados. Será usado CSV como anexo.")
-+                            attachment_bytes = csv_bytes
-+                            attachment_name = f"abastecimentos_{posto_sel}.csv"
-+
-+                        smtp_conf = {
-+                            'server': smtp_server,
-+                            'port': int(smtp_port),
-+                            'user': smtp_user.strip(),
-+                            'password': smtp_password.strip(),
-+                            'use_tls': use_tls
-+                        }
- 
-                         # monta corpo HTML se solicitado
-                         html_body = None
-                         if enviar_html:
-                                                        try:
-                                                                df_temp = df_ab.copy()
+    -                        # Gera Excel em memória
+    -                        buffer = io.BytesIO()
+    -                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+    -                            df_ab.to_excel(writer, index=False, sheet_name='Abastecimentos')
+    -                        excel_bytes = buffer.getvalue()
+    -                        smtp_conf = {
+    -                            'server': smtp_server,
+    -                            'port': int(smtp_port),
+    -                            'user': smtp_user.strip(),
+    -                            'password': smtp_password.strip(),
+    -                            'use_tls': use_tls
+    -                        }
+    +                        # Oferece downloads (CSV + Excel se possível) e prepara anexo para envio.
+    +                        csv_bytes = df_ab.to_csv(index=False).encode('utf-8')
+    +                        st.download_button("⬇️ Baixar CSV", data=csv_bytes, file_name=f"abastecimentos_{posto_sel}.csv", mime="text/csv")
+    +
+    +                        sheets = {"Abastecimentos": df_ab}
+    +                        excel_bytes, engine_used = to_excel_bytes(sheets)
+    +                        if excel_bytes is not None:
+    +                            st.download_button("⬇️ Baixar Excel", data=excel_bytes, file_name=f"abastecimentos_{posto_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    +                            attachment_bytes = excel_bytes
+    +                            attachment_name = f"abastecimentos_{posto_sel}.xlsx"
+    +                        else:
+    +                            st.info("Gerar .xlsx requer 'xlsxwriter' ou 'openpyxl' instalados. Será usado CSV como anexo.")
+    +                            attachment_bytes = csv_bytes
+    +                            attachment_name = f"abastecimentos_{posto_sel}.csv"
+    +
+    +                        smtp_conf = {
+    +                            'server': smtp_server,
+    +                            'port': int(smtp_port),
+    +                            'user': smtp_user.strip(),
+    +                            'password': smtp_password.strip(),
+    +                            'use_tls': use_tls
+    +                        }
+     
+                             # monta corpo HTML se solicitado
+                             html_body = None
+                             if enviar_html:
+                                                            try:
+                                                                    df_temp = df_ab.copy()
     # ...existing code...
-                        with st.spinner('Enviando e-mail com anexo Excel...'):
--                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=excel_bytes, attachment_name=f'abastecimentos_{posto_sel}.xlsx', smtp_config=smtp_conf)
-+                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=attachment_bytes, attachment_name=attachment_name, smtp_config=smtp_conf)
-                        if ok:
-                            st.success('✅ E-mail enviado com sucesso!')
-                            # guarda credenciais mínimas na sessão para facilitar (não persiste em disco)
-                            st.session_state['smtp_user'] = smtp_user
-                            st.session_state['smtp_server'] = smtp_server
-                            st.session_state['smtp_port'] = int(smtp_port)
-                        else:
-                            st.error(f'Falha ao enviar e-mail: {err}')
-    # ...existing code...
+                            with st.spinner('Enviando e-mail com anexo Excel...'):
+    -                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=excel_bytes, attachment_name=f'abastecimentos_{posto_sel}.xlsx', smtp_config=smtp_conf)
+    +                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=attachment_bytes, attachment_name=attachment_name, smtp_config=smtp_conf)
+                            if ok:
+                                st.success('✅ E-mail enviado com sucesso!')
+                                # guarda credenciais mínimas na sessão para facilitar (não persiste em disco)
+                                st.session_state['smtp_user'] = smtp_user
+                                st.session_state['smtp_server'] = smtp_server
+                                st.session_state['smtp_port'] = int(smtp_port)
+                            else:
+                                st.error(f'Falha ao enviar e-mail: {err}')
+    # ...existing
     Gera bytes de um arquivo .xlsx a partir de um dict {sheet_name: DataFrame}.
     Tenta engines na ordem informada; retorna (bytes, engine_usado) ou (None, None).
     """
@@ -801,21 +801,11 @@ def pagina_email():
                     if df_ab.empty:
                         st.warning('Não foram encontrados abastecimentos para o posto selecionado.')
                     else:
-                        # Oferece downloads (CSV + Excel se possível) e prepara anexo para envio.
-                        csv_bytes = df_ab.to_csv(index=False).encode('utf-8')
-                        st.download_button("⬇️ Baixar CSV", data=csv_bytes, file_name=f"abastecimentos_{posto_sel}.csv", mime="text/csv")
-                        
-                        sheets = {"Abastecimentos": df_ab}
-                        excel_bytes, engine_used = to_excel_bytes(sheets)
-                        if excel_bytes is not None:
-                            st.download_button("⬇️ Baixar Excel", data=excel_bytes, file_name=f"abastecimentos_{posto_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                            attachment_bytes = excel_bytes
-                            attachment_name = f"abastecimentos_{posto_sel}.xlsx"
-                        else:
-                            st.info("Gerar .xlsx requer 'xlsxwriter' ou 'openpyxl' instalados. Será usado CSV como anexo.")
-                            attachment_bytes = csv_bytes
-                            attachment_name = f"abastecimentos_{posto_sel}.csv"
-                        
+                        # Gera Excel em memória
+                        buffer = io.BytesIO()
+                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                            df_ab.to_excel(writer, index=False, sheet_name='Abastecimentos')
+                        excel_bytes = buffer.getvalue()
                         smtp_conf = {
                             'server': smtp_server,
                             'port': int(smtp_port),
@@ -823,10 +813,10 @@ def pagina_email():
                             'password': smtp_password.strip(),
                             'use_tls': use_tls
                         }
- 
-                         # monta corpo HTML se solicitado
-                         html_body = None
-                         if enviar_html:
+
+                        # monta corpo HTML se solicitado
+                        html_body = None
+                        if enviar_html:
                                                         try:
                                                                 df_temp = df_ab.copy()
                                                                 # normaliza nomes de colunas para facilitar acesso
@@ -907,7 +897,7 @@ def pagina_email():
                                                                 html_body = None
 
                         with st.spinner('Enviando e-mail com anexo Excel...'):
-                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=attachment_bytes, attachment_name=attachment_name, smtp_config=smtp_conf)
+                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=excel_bytes, attachment_name=f'abastecimentos_{posto_sel}.xlsx', smtp_config=smtp_conf)
                         if ok:
                             st.success('✅ E-mail enviado com sucesso!')
                             # guarda credenciais mínimas na sessão para facilitar (não persiste em disco)
