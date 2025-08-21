@@ -120,6 +120,25 @@ def normalize_combustivel(val):
     except Exception:
         return val
 
+# === nova função utilitária para gerar bytes de Excel com fallback ===
+def to_excel_bytes(sheets: dict, engine_order=('xlsxwriter', 'openpyxl')):
+    """
+    Gera bytes de um arquivo .xlsx a partir de um dict {sheet_name: DataFrame}.
+    Tenta engines na ordem informada; retorna (bytes, engine_usado) ou (None, None).
+    """
+    for engine in engine_order:
+        try:
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine=engine) as writer:
+                for name, df in sheets.items():
+                    sheet_name = (name[:31]) if name else "Sheet1"
+                    df.to_excel(writer, index=False, sheet_name=sheet_name)
+            buffer.seek(0)
+            return buffer.getvalue(), engine
+        except Exception:
+            continue
+    return None, None
+
 
 # CRUD simples para emails dos postos
 def get_postos_emails():
@@ -754,7 +773,7 @@ def pagina_email():
                                                                 # tabela com até 5 registros
                                                                 table_rows = ''
                                                                 cols_for_table = []
-                                                                # decide as colunas que provavelmente existem
+                                                                # decides as colunas que provavelmente existem
                                                                 if 'data' in df_temp.columns:
                                                                         cols_for_table.append('data')
                                                                 if 'placa' in df_temp.columns:
