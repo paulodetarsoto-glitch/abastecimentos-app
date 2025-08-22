@@ -367,6 +367,20 @@ def pagina_cadastros():
                 conn.close()
                 st.success("✅ Cadastro salvo com sucesso!")
 
+    st.markdown("---")
+    if st.button("🗑️ Apagar último cadastro"):
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute("SELECT id FROM cadastros ORDER BY id DESC LIMIT 1")
+        row = c.fetchone()
+        if row:
+            c.execute("DELETE FROM cadastros WHERE id = ?", (row[0],))
+            conn.commit()
+            st.success("Último cadastro apagado com sucesso!")
+        else:
+            st.info("Nenhum cadastro para apagar.")
+        conn.close()
+
 def pagina_abastecimentos():
 
     # Carrega cadastros para listas suspensas
@@ -742,8 +756,10 @@ def generate_request_pdf(payload: dict) -> bytes:
         ["Data:", payload.get("data", "")],
         ["Posto destino:", payload.get("posto", "")],
         ["Placa:", payload.get("placa", "")],
+        ["Motorista:", payload.get("motorista", "")],  # NOVO
         ["Supervisor:", payload.get("supervisor", "")],
         ["Setor:", payload.get("setor", "")],
+        ["Quilometragem atual:", str(payload.get("km_atual", ""))],  # NOVO
         ["Quantidade (L):", str(payload.get("litros", ""))],
         ["Combustível:", payload.get("combustivel", "")]
     ]
@@ -784,6 +800,9 @@ def pagina_email():
             placa = st.text_input("Placa do veículo")
             supervisor = st.text_input("Supervisor responsável")
             setor = st.text_input("Setor")
+            motorista = st.text_input("Nome do motorista")  # NOVO
+            data_abastecimento = st.date_input("Data do abastecimento", value=datetime.today())  # NOVO
+            km_atual = st.number_input("Quilometragem atual", min_value=0, step=1)  # NOVO
         with col2:
             litros = st.number_input("Quantidade de litros", min_value=0.0, step=0.1)
             combustivel = st.selectbox("Tipo de combustível", ["Gasolina", "Etanol", "Diesel S10", "Diesel S500", "GNV"])
@@ -794,8 +813,8 @@ def pagina_email():
         st.subheader("Informações de E-mail")
 
         # Dados do remetente pré-preenchidos
-        nosso_email = st.text_input("Nosso Email (remetente)", value="juniorsantos.ag@hotmail.com", disabled=True)
-        smtp_password = st.text_input("Senha do Email", value="Junior2904*", type="password", disabled=True)
+        nosso_email = st.text_input("Nosso Email (remetente)", value="paulodetarso.to@frangoamericano.com", disabled=True)
+        smtp_password = st.text_input("Senha do Email", value="", type="password", disabled=True)
         smtp_server = st.text_input("Servidor SMTP", value="smtp-mail.outlook.com", disabled=True)
         smtp_port = st.text_input("Porta SMTP", value="587", disabled=True)
         st.markdown("Criptografia: **STARTTLS** (já configurado)")
@@ -819,15 +838,17 @@ def pagina_email():
                 st.error("Informe o e-mail do posto.")
             else:
                 payload = {
-                    "data": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "posto": "",  # opcional, pode ser preenchido se desejar
+                    "data": data_abastecimento.strftime("%Y-%m-%d"),
+                    "posto": "",  # opcional
                     "placa": placa.strip(),
                     "supervisor": supervisor.strip(),
                     "setor": setor.strip(),
+                    "motorista": motorista.strip(),  # NOVO
                     "litros": litros,
                     "combustivel": combustivel,
                     "justificativa": justificativa.strip(),
-                    "solicitante": nosso_email
+                    "solicitante": nosso_email,
+                    "km_atual": km_atual  # NOVO
                 }
                 try:
                     pdf_bytes = generate_request_pdf(payload)
