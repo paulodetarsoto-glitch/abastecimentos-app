@@ -169,21 +169,6 @@ def normalize_combustivel(val):
         return s
     except Exception:
         return val
-
-def to_excel_bytes(sheets: dict, engine_order=('xlsxwriter', 'openpyxl')):
-    for engine in engine_order:
-        try:
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine=engine) as writer:
-                for name, df in sheets.items():
-                    sheet_name = (name[:31]) if name else "Sheet1"
-                    df.to_excel(writer, index=False, sheet_name=sheet_name)
-            buffer.seek(0)
-            return buffer.getvalue(), engine
-        except Exception:
-            continue
-    return None, None
-
 def send_email_smtp(to_address, subject, body=None, html_body=None, attachment_bytes=None, attachment_name='relatorio.pdf', smtp_config=None):
     try:
         import smtplib
@@ -491,46 +476,61 @@ def pagina_requisicoes():
                         "solicitante": condutor.strip()
                     }
 
-                    pdf_bytes = generate_request_pdf(payload)
+                    # tenta gerar o PDF e captura erro claro se reportlab não estiver instalado
+                    try:
+                        pdf_bytes = generate_request_pdf(payload)
+                    except RuntimeError as e:
+                        st.error(f"Erro ao gerar PDF: {e}")
+                        st.info("Instale o reportlab localmente e reinicie a aplicação: pip install reportlab")
+                        pdf_bytes = None
+                    except Exception as e:
+                        st.error(f"Erro inesperado ao gerar PDF: {e}")
+                        pdf_bytes = None
 
-                    if requisicao_teste:
-                        # Modo teste: NÃO salva no DB; apenas gera PDF para verificação
-                        st.success("✅ PDF de teste gerado (não salvo).")
-                        st.download_button(
-                            label="Download PDF (teste)",
-                            data=pdf_bytes,
-                            file_name=f"requisicao_teste_{placa.strip()}_{datetime.now().strftime('%Y%m%d%H%M')}.pdf",
-                            mime="application/pdf"
-                        )
+                    # Se a geração do PDF falhou, não prosseguir para download ou gravação como se estivesse ok
+                    if pdf_bytes is None:
+                        # interrompe o fluxo (o usuário pode corrigir e reenviar)
+                        st.warning("PDF não gerado. Verifique a mensagem acima e tente novamente.")
                     else:
-                        # Modo normal: salva na base marcando status como Enviada
-                        conn = get_connection()
-                        c = conn.cursor()
-                        try:
-                            c.execute("""
-                                INSERT INTO abastecimentos
-                                (Placa, valor_total, total_litros, data, Referente, Odometro, Posto, Combustivel, Condutor, Unidade, Setor, TanqueCheio, Subsetor, Observacoes, Status, EmailPosto, TipoPosto)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (
-                                placa.strip(), 0.0, litros if not tanque_cheio else None,
-                                data_req.strftime("%Y-%m-%d"), referente.strip(), None,
-                                posto.strip(), combustivel_norm, condutor.strip(), "", setor.strip(),
-                                1 if tanque_cheio else 0, subsetor.strip(), referente.strip(), "Enviada",
-                                email_posto.strip(), tipo_posto
-                            ))
-                            conn.commit()
-                        except Exception as e:
-                            st.error(f"Erro ao salvar: {e}")
-                        finally:
-                            conn.close()
+                        # segue com o fluxo anterior: modo teste ou salvar no BD e disponibilizar download
+                        if requisicao_teste:
+                            # Modo teste: NÃO salva no DB; apenas gera PDF para verificação
+                            st.success("✅ PDF de teste gerado (não salvo).")
+                            st.download_button(
+                                label="Download PDF (teste)",
+                                data=pdf_bytes,
+                                file_name=f"requisicao_teste_{placa.strip()}_{datetime.now().strftime('%Y%m%d%H%M')}.pdf",
+                                mime="application/pdf"
+                            )
+                        else:
+                            # Modo normal: salva na base marcando status como Enviada
+                            conn = get_connection()
+                            c = conn.cursor()
+                            try:
+                                c.execute("""
+                                    INSERT INTO abastecimentos
+                                    (Placa, valor_total, total_litros, data, Referente, Odometro, Posto, Combustivel, Condutor, Unidade, Setor, TanqueCheio, Subsetor, Observacoes, Status, EmailPosto, TipoPosto)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (
+                                    placa.strip(), 0.0, litros if not tanque_cheio else None,
+                                    data_req.strftime("%Y-%m-%d"), referente.strip(), None,
+                                    posto.strip(), combustivel_norm, condutor.strip(), "", setor.strip(),
+                                    1 if tanque_cheio else 0, subsetor.strip(), referente.strip(), "Enviada",
+                                    email_posto.strip(), tipo_posto
+                                ))
+                                conn.commit()
+                            except Exception as e:
+                                st.error(f"Erro ao salvar: {e}")
+                            finally:
+                                conn.close()
 
-                        st.success("✅ Requisição enviada e salva. Agora você pode complementar os dados do abastecimento.")
-                        st.download_button(
-                            label="Download PDF (enviada)",
-                            data=pdf_bytes,
-                            file_name=f"requisicao_{placa.strip()}_{datetime.now().strftime('%Y%m%d%H%M')}.pdf",
-                            mime="application/pdf"
-                        )
+                            st.success("✅ Requisição enviada e salva. Agora você pode complementar os dados do abastecimento.")
+                            st.download_button(
+                                label="Download PDF (enviada)",
+                                data=pdf_bytes,
+                                file_name=f"requisicao_{placa.strip()}_{datetime.now().strftime('%Y%m%d%H%M')}.pdf",
+                                mime="application/pdf"
+                            )
 
     # ...edição dos campos complementares após envio...
     if st.session_state.get("_edit_row"):
