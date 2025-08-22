@@ -19,8 +19,12 @@ import plotly.graph_objects as go
 # Configurações iniciais / settings
 # ===========================
 DB_PATH = "abastecimentos.db"
-DEFAULT_LOGO_PATH = "LogoOriginal.png"
-SETTINGS_PATH = "settings.json"
+
+# Pasta raiz do projeto (conforme sua observação)
+PROJECT_DIR = r"C:\Users\paulo\Desktop\Projetos\Abastecimento de frota"
+# Caminho default do logo dentro do projeto
+DEFAULT_LOGO_PATH = os.path.join(PROJECT_DIR, "LogoOriginal.png")
+SETTINGS_PATH = os.path.join(PROJECT_DIR, "settings.json") if os.path.isdir(PROJECT_DIR) else "settings.json"
 
 def load_settings():
     if os.path.exists(SETTINGS_PATH):
@@ -33,14 +37,20 @@ def load_settings():
 
 def save_settings(s):
     try:
-        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        # garante que settings.json seja salvo na pasta do projeto
+        target = SETTINGS_PATH
+        with open(target, "w", encoding="utf-8") as f:
             json.dump(s, f, indent=2, ensure_ascii=False)
         return True
     except Exception:
         return False
 
 _settings = load_settings()
-LOGO_PATH = _settings.get("logo_path", DEFAULT_LOGO_PATH)
+# usa o path do settings se definido, senão usa o default (absoluto)
+LOGO_PATH = _settings.get("logo_path") if _settings.get("logo_path") else DEFAULT_LOGO_PATH
+# se for relativo, torna absoluto em relação à pasta do projeto
+if LOGO_PATH and not os.path.isabs(LOGO_PATH):
+    LOGO_PATH = os.path.join(PROJECT_DIR, LOGO_PATH)
 
 # (Streamlit exige que set_page_config seja o primeiro comando da página)
 st.set_page_config(page_title="Requisições de Abastecimento - Frango Americano", layout="wide", page_icon="⛽")
@@ -158,60 +168,6 @@ def init_db():
 init_db()
 
 # ===========================
-# Utilitários
-# ===========================
-def normalize_combustivel(val):
-    try:
-        if val is None:
-            return val
-        s = str(val).strip()
-        s = ' '.join([w.capitalize() for w in s.split()])
-        return s
-    except Exception:
-        return val
-def send_email_smtp(to_address, subject, body=None, html_body=None, attachment_bytes=None, attachment_name='relatorio.pdf', smtp_config=None):
-    try:
-        import smtplib
-        from email.message import EmailMessage
-
-        msg = EmailMessage()
-        msg['From'] = smtp_config.get('user') if smtp_config else ''
-        msg['To'] = to_address
-        msg['Subject'] = subject
-
-        if html_body:
-            msg.set_content(body if body else 'Este e-mail contém conteúdo em HTML.')
-            msg.add_alternative(html_body, subtype='html')
-        else:
-            msg.set_content(body if body else '')
-
-        if attachment_bytes is not None:
-            subtype = 'octet-stream'
-            maintype = 'application'
-            if attachment_name.lower().endswith('.xlsx'):
-                maintype, subtype = 'application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            elif attachment_name.lower().endswith('.pdf'):
-                maintype, subtype = 'application', 'pdf'
-            msg.add_attachment(attachment_bytes, maintype=maintype, subtype=subtype, filename=attachment_name)
-
-        server = smtp_config.get('server', 'smtp.gmail.com') if smtp_config else 'smtp.gmail.com'
-        port = smtp_config.get('port', 587) if smtp_config else 587
-        user = smtp_config.get('user') if smtp_config else None
-        password = smtp_config.get('password') if smtp_config else None
-        use_tls = smtp_config.get('use_tls', True) if smtp_config else True
-
-        s = smtplib.SMTP(server, port, timeout=30)
-        if use_tls:
-            s.starttls()
-        if user and password:
-            s.login(user, password)
-        s.send_message(msg)
-        s.quit()
-        return True, ''
-    except Exception as e:
-        return False, str(e)
-
-# ===========================
 # Geração de PDF (mantida, agora inclui cabeçalho com data)
 # ===========================
 def generate_request_pdf(payload: dict) -> bytes:
@@ -301,22 +257,21 @@ def pagina_requisicoes():
     st.markdown("<div class='app-card title-bar'>", unsafe_allow_html=True)
     col1, col2 = st.columns([1, 3])
     with col1:
-        # pequena logo dentro do header do card
-        if os.path.exists(LOGO_PATH):
+        # pequena logo dentro do header do card (usa LOGO_PATH absoluto)
+        if LOGO_PATH and os.path.exists(LOGO_PATH):
             st.image(LOGO_PATH, width=140)
     with col2:
         st.markdown("<h2 style='margin:0'>Requisição de abastecimento</h2>", unsafe_allow_html=True)
         st.markdown("<div style='color:#0f0f0f'>Área principal de requisições — pesquisa, ações rápidas e criação</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Topo: pesquisa e ações
+    # Topo: pesquisa e ações (REMOVIDO botão de export para Excel)
     topo_col1, topo_col2 = st.columns([3,1])
     with topo_col1:
         q = st.text_input("Pesquisar (ID, Placa, Condutor, Posto, Observações)", value="", key="pesquisa_reqs")
     with topo_col2:
         st.markdown("<div class='top-actions'>", unsafe_allow_html=True)
         st.button("⚙️", key="top_icon_filter")
-        st.button("⬇️", key="top_icon_export")
         st.button("🔁", key="top_icon_refresh")
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -340,11 +295,12 @@ def pagina_requisicoes():
     conn.close()
 
     # Normalizações de colunas possíveis (compatibilidade com esquemas antigos)
-    df_columns = [c for c in df.columns]
-    for c in ["combustivel", "Combustivel"]:
-        if c in df_columns:
-            df['Combustivel'] = df[c].apply(normalize_combustivel)
-            break
+    if not df.empty:
+        df_columns = [c for c in df.columns]
+        for c in ["combustivel", "Combustivel"]:
+            if c in df_columns:
+                df['Combustivel'] = df[c].apply(normalize_combustivel)
+                break
 
     # Exibição
     if df.empty:
@@ -416,7 +372,7 @@ def pagina_requisicoes():
                     st.sidebar.write(f"**{k}**: {v}")
 
     st.markdown("---")
-    st.caption("Fonte: tabela 'abastecimentos' (todas as requisições) — cadastros automáticos são criados ao enviar uma nova requisição.")
+    st.caption("Fonte: tabela 'abastecimentos' (todas as requisições).")
 
     # Novo formulário de requisição (quando acionado)
     if st.session_state.get("_novo_requisicao_open"):
@@ -458,7 +414,7 @@ def pagina_requisicoes():
                     # Monta payload para PDF
                     payload = {
                         "empresa": "Frango Americano",
-                        "logo_path": LOGO_PATH,
+                        "logo_path": LOGO_PATH if LOGO_PATH else None,
                         "data": data_req.strftime("%Y-%m-%d"),
                         "posto": posto.strip(),
                         "email_posto": email_posto.strip(),
@@ -468,7 +424,7 @@ def pagina_requisicoes():
                         "supervisor": "",
                         "setor": setor.strip(),
                         "subsetor": subsetor.strip(),
-                        "litros": litros if not tanque_cheio else None,
+                        "litros": liters if False else (litros if not tanque_cheio else None),
                         "valor_total": None,
                         "km_atual": None,
                         "combustivel": combustivel_norm,
@@ -487,12 +443,10 @@ def pagina_requisicoes():
                         st.error(f"Erro inesperado ao gerar PDF: {e}")
                         pdf_bytes = None
 
-                    # Se a geração do PDF falhou, não prosseguir para download ou gravação como se estivesse ok
+                    # Se a geração do PDF falhou, não prosseguir para download ou gravação
                     if pdf_bytes is None:
-                        # interrompe o fluxo (o usuário pode corrigir e reenviar)
                         st.warning("PDF não gerado. Verifique a mensagem acima e tente novamente.")
                     else:
-                        # segue com o fluxo anterior: modo teste ou salvar no BD e disponibilizar download
                         if requisicao_teste:
                             # Modo teste: NÃO salva no DB; apenas gera PDF para verificação
                             st.success("✅ PDF de teste gerado (não salvo).")
