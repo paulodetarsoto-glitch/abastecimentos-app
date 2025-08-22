@@ -1,7 +1,7 @@
 # =========================================================
 #  Abastecimentos de Veículos - Controle com IA e Gmail
-#  Autor: Paulo Varão
-#  Versão: Painel rico (tema branco, filtros Select All, KPIs e gráficos extras)
+#  Autor: Paulo Varão (modificado por GitHub Copilot)
+#  Versão: Painel - Requisições como fonte única / remoção de uploads e aba de cadastros
 # =========================================================
 import os
 import io
@@ -20,38 +20,43 @@ DB_PATH = "abastecimentos.db"
 LOGO_PATH = "LogoOriginal.png"  # Caminho do logo
 
 # (Streamlit exige que set_page_config seja o primeiro comando da página)
-st.set_page_config(page_title="Gestão de Abastecimentos", layout="wide", page_icon="⛽")
+st.set_page_config(page_title="Requisições de Abastecimento - Frango Americano", layout="wide", page_icon="⛽")
 
 # ===========================
-# Estilos (tema branco + cartões)
+# Estilos (tema ajustado)
 # ===========================
 CUSTOM_CSS = """
 <style>
+/* Fundo geral escuro para contraste com identidade azul */
 body { background: #07132a !important; color: #E6F0FF; }
 
-/* Neon accents and cards */
-.neon { text-shadow: 0 0 8px rgba(0,150,255,0.6); color: #E6F0FF; }
-.app-card { background: linear-gradient(180deg, rgba(7,19,42,0.6), rgba(4,12,24,0.6)); border: 1px solid rgba(0,150,255,0.08); border-radius: 12px; padding: 12px; }
+/* Sidebar azul Frango Americano */
+[data-testid="stSidebar"] > div:first-child {
+    background: linear-gradient(180deg,#01263f,#003b63);
+    color: #fff;
+}
 
-[data-testid="stMetricValue"] { font-size: 18px !important; font-weight: 700; color: #E6F0FF; }
-.kpi-card { background: linear-gradient(90deg, rgba(4,12,24,0.6), rgba(7,19,42,0.6)); border-radius:10px; padding:12px; border:1px solid rgba(0,150,255,0.12); }
-.neon-title { color: #AEE7FF; text-shadow: 0 0 10px rgba(0,160,255,0.6); }
+/* Logo/topo e cartões */
+.app-card { background: linear-gradient(180deg, rgba(7,19,42,0.6), rgba(4,12,24,0.6)); border-radius: 8px; padding: 12px; margin-bottom:12px; }
+.title-bar { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.top-actions > button { margin-left:8px; }
 .stButton>button { background: linear-gradient(90deg,#1F77B4,#00A3FF); color: white; border: none; }
-th { background: linear-gradient(90deg,#12324A,#1F77B4); color: white; }
-hr { border: none; height:1px; background: rgba(0,150,255,0.06); margin: 1rem 0; }
+.table-actions button { margin-right:6px; }
 </style>
-
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ===========================
 # Banco de dados
 # ===========================
+def get_connection():
+    return sqlite3.connect(DB_PATH)
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     c = conn.cursor()
 
-    # Tabela de cadastros (com UNIQUE em Placa para consistência)
+    # Tabela de cadastros (mantida, mas sem aba de cadastro manual)
     c.execute("""
         CREATE TABLE IF NOT EXISTS cadastros (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +70,7 @@ def init_db():
         )
     """)
 
-    # Tabela de abastecimentos
+    # Tabela de abastecimentos / requisições (fonte única)
     c.execute("""
         CREATE TABLE IF NOT EXISTS abastecimentos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,109 +84,54 @@ def init_db():
             Combustivel TEXT,
             Condutor TEXT,
             Unidade TEXT,
-            Setor TEXT
+            Setor TEXT,
+            -- campos extras que podem não existir em bases antigas (serão garantidos abaixo)
+            Status TEXT,
+            Subsetor TEXT,
+            Observacoes TEXT,
+            TanqueCheio INTEGER,
+            DataUso TEXT,
+            KmUso INTEGER
         )
     """)
+    conn.commit()
+
+    # Garante colunas adicionais caso a tabela exista sem elas (compatibilidade)
+    existing = [r[1] for r in c.execute("PRAGMA table_info(abastecimentos)").fetchall()]
+    extras = {
+        'Status': "TEXT",
+        'Subsetor': "TEXT",
+        'Observacoes': "TEXT",
+        'TanqueCheio': "INTEGER",
+        'DataUso': "TEXT",
+        'KmUso': "INTEGER"
+    }
+    for col, typ in extras.items():
+        if col not in existing:
+            try:
+                c.execute(f"ALTER TABLE abastecimentos ADD COLUMN {col} {typ}")
+            except Exception:
+                pass
 
     conn.commit()
     conn.close()
 
 init_db()
 
-# Tabela para armazenar e-mails dos postos
-def init_postos_emails():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS postos_emails (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            posto TEXT UNIQUE,
-            email TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-init_postos_emails()
-
-def get_connection():
-    return sqlite3.connect(DB_PATH)
-
-
+# ===========================
+# Utilitários
+# ===========================
 def normalize_combustivel(val):
-    """Normaliza o nome do combustível: remove espaços extras e capitaliza de forma consistente."""
     try:
         if val is None:
             return val
         s = str(val).strip()
-        # capitaliza cada palavra (Gasolina -> Gasolina, gasolina -> Gasolina)
         s = ' '.join([w.capitalize() for w in s.split()])
         return s
     except Exception:
         return val
 
-# === nova função utilitária para gerar bytes de Excel com fallback ===
 def to_excel_bytes(sheets: dict, engine_order=('xlsxwriter', 'openpyxl')):
-    """    # ...existing code...
-                        if df_ab.empty:
-                            st.warning('Não foram encontrados abastecimentos para o posto selecionado.')
-                        else:
-    -                        # Gera Excel em memória
-    -                        buffer = io.BytesIO()
-    -                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-    -                            df_ab.to_excel(writer, index=False, sheet_name='Abastecimentos')
-    -                        excel_bytes = buffer.getvalue()
-    -                        smtp_conf = {
-    -                            'server': smtp_server,
-    -                            'port': int(smtp_port),
-    -                            'user': smtp_user.strip(),
-    -                            'password': smtp_password.strip(),
-    -                            'use_tls': use_tls
-    -                        }
-    +                        # Oferece downloads (CSV + Excel se possível) e prepara anexo para envio.
-    +                        csv_bytes = df_ab.to_csv(index=False).encode('utf-8')
-    +                        st.download_button("⬇️ Baixar CSV", data=csv_bytes, file_name=f"abastecimentos_{posto_sel}.csv", mime="text/csv")
-    +
-    +                        sheets = {"Abastecimentos": df_ab}
-    +                        excel_bytes, engine_used = to_excel_bytes(sheets)
-    +                        if excel_bytes is not None:
-    +                            st.download_button("⬇️ Baixar Excel", data=excel_bytes, file_name=f"abastecimentos_{posto_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    +                            attachment_bytes = excel_bytes
-    +                            attachment_name = f"abastecimentos_{posto_sel}.xlsx"
-    +                        else:
-    +                            st.info("Gerar .xlsx requer 'xlsxwriter' ou 'openpyxl' instalados. Será usado CSV como anexo.")
-    +                            attachment_bytes = csv_bytes
-    +                            attachment_name = f"abastecimentos_{posto_sel}.csv"
-    +
-    +                        smtp_conf = {
-    +                            'server': smtp_server,
-    +                            'port': int(smtp_port),
-    +                            'user': smtp_user.strip(),
-    +                            'password': smtp_password.strip(),
-    +                            'use_tls': use_tls
-    +                        }
-     
-                             # monta corpo HTML se solicitado
-                             html_body = None
-                             if enviar_html:
-                                                            try:
-                                                                    df_temp = df_ab.copy()
-    # ...existing code...
-                            with st.spinner('Enviando e-mail com anexo Excel...'):
-    -                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=excel_bytes, attachment_name=f'abastecimentos_{posto_sel}.xlsx', smtp_config=smtp_conf)
-    +                            ok, err = send_email_smtp(to_address=to_email.strip(), subject=assunto, body=(mensagem if not enviar_html else ''), html_body=html_body, attachment_bytes=attachment_bytes, attachment_name=attachment_name, smtp_config=smtp_conf)
-                            if ok:
-                                st.success('✅ E-mail enviado com sucesso!')
-                                # guarda credenciais mínimas na sessão para facilitar (não persiste em disco)
-                                st.session_state['smtp_user'] = smtp_user
-                                st.session_state['smtp_server'] = smtp_server
-                                st.session_state['smtp_port'] = int(smtp_port)
-                            else:
-                                st.error(f'Falha ao enviar e-mail: {err}')
-    # ...existing
-    Gera bytes de um arquivo .xlsx a partir de um dict {sheet_name: DataFrame}.
-    Tenta engines na ordem informada; retorna (bytes, engine_usado) ou (None, None).
-    """
     for engine in engine_order:
         try:
             buffer = io.BytesIO()
@@ -195,27 +145,7 @@ def to_excel_bytes(sheets: dict, engine_order=('xlsxwriter', 'openpyxl')):
             continue
     return None, None
 
-
-# CRUD simples para emails dos postos
-def get_postos_emails():
-    conn = get_connection()
-    df = pd.read_sql('SELECT * FROM postos_emails', conn)
-    conn.close()
-    return df
-
-def save_posto_email(posto, email):
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO postos_emails(posto, email) VALUES (?, ?)', (posto, email))
-    conn.commit()
-    conn.close()
-
-def send_email_smtp(to_address, subject, body=None, html_body=None, attachment_bytes=None, attachment_name='relatorio.csv', smtp_config=None):
-    """
-    Envia e-mail via SMTP. Pode enviar texto (body) ou HTML (html_body).
-    smtp_config: dict com keys 'server','port','user','password','use_tls'
-    Retorna (True, '') ou (False, 'erro')
-    """
+def send_email_smtp(to_address, subject, body=None, html_body=None, attachment_bytes=None, attachment_name='relatorio.pdf', smtp_config=None):
     try:
         import smtplib
         from email.message import EmailMessage
@@ -226,18 +156,18 @@ def send_email_smtp(to_address, subject, body=None, html_body=None, attachment_b
         msg['Subject'] = subject
 
         if html_body:
-            # Texto alternativo simples
             msg.set_content(body if body else 'Este e-mail contém conteúdo em HTML.')
             msg.add_alternative(html_body, subtype='html')
         else:
             msg.set_content(body if body else '')
 
         if attachment_bytes is not None:
-            # tenta inferir tipo por extensão
             subtype = 'octet-stream'
             maintype = 'application'
             if attachment_name.lower().endswith('.xlsx'):
                 maintype, subtype = 'application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            elif attachment_name.lower().endswith('.pdf'):
+                maintype, subtype = 'application', 'pdf'
             msg.add_attachment(attachment_bytes, maintype=maintype, subtype=subtype, filename=attachment_name)
 
         server = smtp_config.get('server', 'smtp.gmail.com') if smtp_config else 'smtp.gmail.com'
@@ -258,483 +188,9 @@ def send_email_smtp(to_address, subject, body=None, html_body=None, attachment_b
         return False, str(e)
 
 # ===========================
-# Uploads Excel
+# Geração de PDF (mantida)
 # ===========================
-def upload_cadastros(file):
-    try:
-        df = pd.read_excel(file)
-        expected_cols = ["Placa", "Categoria", "Marca", "Modelo", "Condutor", "Unidade", "Setor"]
-        if not all(col in df.columns for col in expected_cols):
-            st.error(f"❌ Planilha inválida! Deve conter as colunas: {expected_cols}")
-            return
-        if not df["Placa"].notna().all():
-            st.error("❌ Existem registros sem Placa. Corrija a planilha antes do upload.")
-            return
-
-        conn = get_connection()
-        cur = conn.cursor()
-        for _, row in df.iterrows():
-            try:
-                cur.execute("""
-                    INSERT OR REPLACE INTO cadastros
-                    (Placa, Categoria, Marca, Modelo, Condutor, Unidade, Setor)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (row["Placa"], row["Categoria"], row["Marca"], row["Modelo"],
-                      row["Condutor"], row["Unidade"], row["Setor"]))
-            except Exception as e:
-                st.warning(f"Não foi possível inserir Placa {row.get('Placa')}: {e}")
-        conn.commit()
-        conn.close()
-        st.success("✅ Cadastros importados com sucesso!")
-    except Exception as e:
-        st.error(f"Erro ao fazer upload de cadastros: {e}")
-
-def upload_abastecimentos(file):
-    try:
-        df = pd.read_excel(file)
-        expected_cols = ["Placa", "Valor Total", "Total de litros", "Data", "Referente",
-                         "Odometro", "Posto", "Combustivel", "Condutor", "Unidade", "Setor"]
-        if not all(col in df.columns for col in expected_cols):
-            st.error(f"❌ Planilha inválida! Deve conter as colunas: {expected_cols}")
-            return
-        if not df["Placa"].notna().all():
-            st.error("❌ Existem registros sem Placa. Corrija a planilha antes do upload.")
-            return
-
-        df = df.copy()
-        df.rename(columns={
-            "Valor Total": "valor_total",
-            "Total de litros": "total_litros",
-            "Data": "data"
-        }, inplace=True)
-        # Normaliza coluna de Combustível para evitar duplicatas como 'Gasolina '
-        if 'Combustivel' in df.columns:
-            df['Combustivel'] = df['Combustivel'].apply(normalize_combustivel)
-
-        conn = get_connection()
-        df.to_sql("abastecimentos", conn, if_exists="append", index=False)
-        conn.close()
-        st.success("✅ Abastecimentos importados com sucesso!")
-    except Exception as e:
-        st.error(f"Erro ao fazer upload de abastecimentos: {e}")
-
-# ===========================
-# Páginas
-# ===========================
-def pagina_inicio():
-    if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=220)
-    st.title("Sistema de Gestão de Abastecimentos")
-    st.markdown("""
-Bem-vindo ao painel completo de controle de abastecimentos!
-
-O programa foi desenvolvido para centralizar e otimizar o controle da frota, oferecendo visão completa e estratégica:
-
-- Registro detalhado por veículo, motorista, data, combustível, litros e custo.
-- Análises macro e micro para identificar padrões e oportunidades de economia.
-- Dashboards interativos com KPIs, gráficos e evolução histórica.
-- Narrativas analíticas automáticas para apoiar decisões e planejamento.
-""")
-
-def pagina_cadastros():
-    st.subheader("📂 Upload de planilha Excel (Cadastros)")
-    file = st.file_uploader("Selecione o arquivo Cadastros.xlsx", type=["xlsx"], key="cadastros")
-    if file:
-        upload_cadastros(file)
-
-    st.subheader("Cadastro Manual")
-    with st.form("form_cadastro"):
-        placa = st.text_input("Placa")
-        categoria = st.text_input("Categoria")
-        marca = st.text_input("Marca")
-        modelo = st.text_input("Modelo")
-        condutor = st.text_input("Condutor")
-        unidade = st.text_input("Unidade")
-        setor = st.text_input("Setor")
-        submitted = st.form_submit_button("Salvar Cadastro")
-        if submitted:
-            if not placa.strip():
-                st.error("❌ O campo Placa é obrigatório!")
-            else:
-                conn = get_connection()
-                c = conn.cursor()
-                c.execute("""
-                    INSERT OR REPLACE INTO cadastros (Placa, Categoria, Marca, Modelo, Condutor, Unidade, Setor)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (placa.strip(), categoria.strip(), marca.strip(), modelo.strip(),
-                      condutor.strip(), unidade.strip(), setor.strip()))
-                conn.commit()
-                conn.close()
-                st.success("✅ Cadastro salvo com sucesso!")
-
-    st.markdown("---")
-    if st.button("🗑️ Apagar último cadastro"):
-        conn = get_connection()
-        c = conn.cursor()
-        c.execute("SELECT id FROM cadastros ORDER BY id DESC LIMIT 1")
-        row = c.fetchone()
-        if row:
-            c.execute("DELETE FROM cadastros WHERE id = ?", (row[0],))
-            conn.commit()
-            st.success("Último cadastro apagado com sucesso!")
-        else:
-            st.info("Nenhum cadastro para apagar.")
-        conn.close()
-
-def pagina_abastecimentos():
-
-    # Carrega cadastros para listas suspensas
-    conn = get_connection()
-    cadastros_df = pd.read_sql("SELECT * FROM cadastros", conn)
-    conn.close()
-
-    st.subheader("📂 Upload de planilha Excel (Abastecimentos)")
-    file = st.file_uploader("Selecione o arquivo Abastecimentos.xlsx", type=["xlsx"], key="abastecimentos")
-    if file:
-        upload_abastecimentos(file)
-
-    st.subheader("Registro Manual")
-    with st.form("form_abastecimento"):
-        # Opções seguras (vazias se não houver cadastro)
-        placas_opt = sorted(cadastros_df["Placa"].dropna().unique().tolist()) if not cadastros_df.empty else []
-        condutores_opt = sorted(cadastros_df["Condutor"].dropna().unique().tolist()) if not cadastros_df.empty else []
-        unidades_opt = sorted(cadastros_df["Unidade"].dropna().unique().tolist()) if not cadastros_df.empty else []
-        setores_opt = sorted(cadastros_df["Setor"].dropna().unique().tolist()) if not cadastros_df.empty else []
-
-        colA, colB, colC = st.columns(3)
-        with colA:
-            placa = st.selectbox("Placa", placas_opt, index=0 if placas_opt else None)
-        with colB:
-            # Preenchimento automático por placa (se existir)
-            condutor_default = None
-            unidade_default = None
-            setor_default = None
-            if placa and not cadastros_df.empty:
-                row = cadastros_df.loc[cadastros_df["Placa"] == placa]
-                if not row.empty:
-                    condutor_default = row["Condutor"].iloc[0] if pd.notna(row["Condutor"].iloc[0]) else None
-                    unidade_default = row["Unidade"].iloc[0] if pd.notna(row["Unidade"].iloc[0]) else None
-                    setor_default = row["Setor"].iloc[0] if pd.notna(row["Setor"].iloc[0]) else None
-
-            condutor = st.selectbox("Condutor", condutores_opt, index=condutores_opt.index(condutor_default) if condutor_default in condutores_opt else 0 if condutores_opt else None)
-        with colC:
-            unidade = st.selectbox("Unidade", unidades_opt, index=unidades_opt.index(unidade_default) if unidade_default in unidades_opt else 0 if unidades_opt else None)
-
-        # Linha seguinte: Setor e Posto
-        colD, colE = st.columns(2)
-        with colD:
-            # CORREÇÃO: garantir que "setor" venha da lista de setores (não da unidade)
-            setor = st.selectbox("Setor", setores_opt, index=setores_opt.index(setor_default) if setor_default in setores_opt else 0 if setores_opt else None)
-        with colE:
-            posto = st.text_input("Posto")
-
-        combustivel = st.selectbox("Combustível", ["Gasolina", "Etanol", "Diesel S10", "Diesel S500", "GNV"])
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            valor_total = st.number_input("Valor Total (R$)", min_value=0.0, step=0.01)
-        with col2:
-            total_litros = st.number_input("Total de litros", min_value=0.0, step=0.01)
-        with col3:
-            odometro = st.number_input("Odômetro", min_value=0, step=1)
-
-        col4, col5 = st.columns(2)
-        with col4:
-            data = st.date_input("Data", datetime.today())
-        with col5:
-            referente = st.text_input("Referente")
-
-        submitted = st.form_submit_button("Salvar Abastecimento")
-
-        if submitted:
-            if not placa:
-                st.error("❌ O campo Placa é obrigatório!")
-            else:
-                conn = get_connection()
-                c = conn.cursor()
-                # garante combustivel normalizado
-                combustivel_norm = normalize_combustivel(combustivel)
-                c.execute("""
-                    INSERT INTO abastecimentos 
-                    (Placa, valor_total, total_litros, data, Referente, Odometro, Posto, Combustivel, Condutor, Unidade, Setor)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (placa, valor_total, total_litros, data.strftime("%Y-%m-%d"), referente,
-                      odometro, posto, combustivel_norm, condutor, unidade, setor))
-                conn.commit()
-                conn.close()
-                st.success("✅ Abastecimento registrado com sucesso!")
-
-def multiselect_select_all(label, options, key=None):
-    """
-    Multiselect com opção "Selecionar tudo".
-    - Se "Selecionar tudo" estiver selecionado OU se o usuário não selecionar nada, retorna todas as opções reais.
-    """
-    if not options:
-        return []
-    sentinel = "Selecionar tudo"
-    opts = [sentinel] + list(options)
-    selected = st.multiselect(label, opts, default=opts, key=key)
-    if (sentinel in selected) or (len(selected) == 0):
-        return list(options)
-    else:
-        # Garante que não passe o sentinel adiante
-        return [x for x in selected if x != sentinel]
-
-def pagina_dashboard():
-    st.header("📊 Dashboard de Abastecimentos")
-
-    # Leitura
-    conn = get_connection()
-    df = pd.read_sql("SELECT * FROM abastecimentos", conn)
-    conn.close()
-
-    if df.empty:
-        st.info("Nenhum dado registrado ainda.")
-        return
-
-    # Padronização
-    df.columns = [c.strip().lower() for c in df.columns]
-    df['data'] = pd.to_datetime(df['data'], errors='coerce')
-    df = df.dropna(subset=['data'])
-    # Normaliza combustivel para evitar duplicatas com espaços/maiúsculas
-    if 'combustivel' in df.columns:
-        df['combustivel'] = df['combustivel'].apply(normalize_combustivel)
-
-    # ======================
-    # Filtros (listas suspensas com 'Todos')
-    # ======================
-    with st.expander("🔎 Filtros", expanded=True):
-        colf1, colf2, colf3, colf4, colf5 = st.columns(5)
-        with colf1:
-            placas_opts = ['Todos'] + sorted(df["placa"].dropna().unique().tolist())
-            placa_sel = st.selectbox("Placa", placas_opts, index=0)
-        with colf2:
-            condutores_opts = ['Todos'] + sorted(df["condutor"].dropna().unique().tolist())
-            condutor_sel = st.selectbox("Condutor", condutores_opts, index=0)
-        with colf3:
-            unidades_opts = ['Todos'] + sorted(df["unidade"].dropna().unique().tolist())
-            unidade_sel = st.selectbox("Unidade", unidades_opts, index=0)
-        with colf4:
-            setores_opts = ['Todos'] + sorted(df["setor"].dropna().unique().tolist())
-            setor_sel = st.selectbox("Setor", setores_opts, index=0)
-        with colf5:
-            combust_opts = ['Todos'] + sorted(df["combustivel"].dropna().unique().tolist())
-            combust_sel = st.selectbox("Combustível", combust_opts, index=0)
-
-        # Período (opcional)
-        colp1, colp2 = st.columns(2)
-        with colp1:
-            dt_min = df["data"].min()
-            dt_max = df["data"].max()
-            start = st.date_input("Data inicial", dt_min.date() if pd.notna(dt_min) else datetime.today().date())
-        with colp2:
-            end = st.date_input("Data final", dt_max.date() if pd.notna(dt_max) else datetime.today().date())
-
-    # Aplica filtros (quando não 'Todos')
-    mask = pd.Series(True, index=df.index)
-    if placa_sel != 'Todos':
-        mask &= df['placa'] == placa_sel
-    if condutor_sel != 'Todos':
-        mask &= df['condutor'] == condutor_sel
-    if unidade_sel != 'Todos':
-        mask &= df['unidade'] == unidade_sel
-    if setor_sel != 'Todos':
-        mask &= df['setor'] == setor_sel
-    if combust_sel != 'Todos':
-        mask &= df['combustivel'] == combust_sel
-    mask &= (df['data'].dt.date >= start) & (df['data'].dt.date <= end)
-    dff = df.loc[mask].copy()
-
-    if dff.empty:
-        st.warning("Não há dados com os filtros selecionados.")
-        return
-
-    # ======================
-    # KPIs (originais + extras)
-    # ======================
-    total_litros = float(dff['total_litros'].sum())
-    total_valor = float(dff['valor_total'].sum())
-    n_veiculos = int(dff["placa"].nunique())
-    n_postos = int(dff["posto"].nunique())
-    custo_medio_litro = (total_valor / total_litros) if total_litros > 0 else 0.0
-    ticket_medio = float(dff["valor_total"].mean()) if not dff.empty else 0.0
-    abastecimentos_qtd = int(len(dff))
-
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    with k1: st.metric("🚗 Veículos distintos", n_veiculos)
-    with k2: st.metric("⛽ Postos distintos", n_postos)
-    with k3: st.metric("🛢 Total de litros", f"{total_litros:,.2f}")
-    with k4: st.metric("💰 Valor total gasto", f"R$ {total_valor:,.2f}")
-    with k5: st.metric("💸 Custo médio/L", f"R$ {custo_medio_litro:.2f}")
-    with k6: st.metric("🧾 Ticket médio", f"R$ {ticket_medio:,.2f}")
-
-
-    # Custo médio por litro por combustível
-    df_custo_comb = dff.groupby('combustivel', as_index=False).apply(
-        lambda g: pd.Series({
-            'custo_medio_litro': g['valor_total'].sum() / g['total_litros'].sum() if g['total_litros'].sum() > 0 else 0.0
-        })
-    ).reset_index(drop=True)
-    # Gráfico de colunas verticais
-    fig_custo_comb = px.bar(
-        df_custo_comb,
-        x='combustivel',
-        y='custo_medio_litro',
-        text='custo_medio_litro',
-        title='Custo médio por litro por Combustível',
-        color='combustivel',
-        color_discrete_sequence=px.colors.qualitative.Set1
-    )
-    fig_custo_comb.update_traces(texttemplate='R$ %{y:.2f}', textposition='outside')
-    fig_custo_comb.update_layout(yaxis_title='R$ por litro', xaxis_title='Combustível')
-    st.plotly_chart(fig_custo_comb, use_container_width=True)
-    st.markdown("---")
-
-    # ======================
-    # Gráficos reorganizados e novos
-    # ======================
-    # calcula preco medio por registro para alguns gráficos
-    dff["preco_medio"] = np.where(dff["total_litros"] > 0, dff["valor_total"] / dff["total_litros"], np.nan)
-
-    # Row 1: distribuição por Unidade, Combustível e Valor por Posto
-    r1c1, r1c2, r1c3 = st.columns(3)
-    with r1c1:
-        fig_unidade = px.pie(dff, names="unidade", values="total_litros", title="Litros por Unidade", color_discrete_sequence=px.colors.qualitative.Bold)
-        fig_unidade.update_traces(textinfo='percent+label')
-        st.plotly_chart(fig_unidade, use_container_width=True)
-    with r1c2:
-        fig_comb = px.pie(dff, names="combustivel", values="total_litros", title="Litros por Combustível", color_discrete_sequence=px.colors.qualitative.Set3)
-        fig_comb.update_traces(textinfo='percent+label')
-        st.plotly_chart(fig_comb, use_container_width=True)
-    with r1c3:
-        # mostra todos os postos ordenados por valor (sem limite Top-N)
-        df_posto = dff.groupby("posto", as_index=False)["valor_total"].sum().sort_values("valor_total", ascending=True)
-        # barra horizontal: valor no eixo x, posto no y
-        fig_posto = px.bar(df_posto, x="valor_total", y="posto", orientation='h', text="valor_total", title="Postos por Valor", color="valor_total", color_continuous_scale="Plasma")
-        # garante que maior valor apareça no topo
-        fig_posto.update_layout(yaxis={'categoryorder':'total ascending'})
-        fig_posto.update_traces(textposition='auto')
-        st.plotly_chart(fig_posto, use_container_width=True)
-
-    # Row 2: Placa ranking, Boxplot preço por combustível, Histograma de tickets
-    r2c1, r2c2, r2c3 = st.columns(3)
-    with r2c1:
-        # calcula total por placa (mostra todas as placas, sem limitar)
-        df_placa = dff.groupby("placa", as_index=False)["total_litros"].sum().sort_values("total_litros", ascending=True)
-        # barras horizontais em formato ranking (maior no topo)
-        fig_placa = px.bar(df_placa, x="total_litros", y="placa", orientation='h', text="total_litros", title="Placas por Litros (ranking)", color="total_litros", color_continuous_scale="Viridis")
-        # força ordenação por total para garantir ranking visual (maior no topo)
-        fig_placa.update_layout(yaxis={'categoryorder':'total ascending'})
-        fig_placa.update_traces(textposition='auto')
-        st.plotly_chart(fig_placa, use_container_width=True)
-    # Ranking por Setor (horizontal) - mostra todos os setores
-    try:
-        df_setor = dff.groupby('setor', as_index=False)['total_litros'].sum().sort_values('total_litros', ascending=True)
-        fig_setor = px.bar(df_setor, x='total_litros', y='setor', orientation='h', text='total_litros', title='Setores por Total de Litros', color='total_litros', color_continuous_scale='Blues')
-        fig_setor.update_layout(yaxis={'categoryorder':'total ascending'})
-        fig_setor.update_traces(textposition='auto')
-        st.plotly_chart(fig_setor, use_container_width=True)
-    except Exception:
-        pass
-    with r2c2:
-        fig_box = px.box(dff, x='combustivel', y='preco_medio', title='Boxplot Preço médio por Combustível', points='all', color='combustivel')
-        st.plotly_chart(fig_box, use_container_width=True)
-    with r2c3:
-        fig_hist = px.histogram(dff, x='valor_total', nbins=25, title='Distribuição de Ticket (Valor Total)', color_discrete_sequence=['#636EFA'])
-        st.plotly_chart(fig_hist, use_container_width=True)
-
-    # Row 3: Séries temporais
-    t1, t2 = st.columns(2)
-    with t1:
-        df_mes_litros = dff.groupby(dff['data'].dt.to_period('M'))['total_litros'].sum().reset_index()
-        df_mes_litros['data'] = df_mes_litros['data'].dt.strftime('%b/%y')
-        fig_linhas = px.line(df_mes_litros, x="data", y="total_litros", markers=True, title="Evolução de Litros por Mês", labels={'data': 'Mês', 'total_litros': 'Total de Litros'}, color_discrete_sequence=["#00CC96"])
-        st.plotly_chart(fig_linhas, use_container_width=True)
-    with t2:
-        df_mes_valor = dff.groupby(dff['data'].dt.to_period('M'))['valor_total'].sum().reset_index()
-        df_mes_valor['data'] = df_mes_valor['data'].dt.strftime('%b/%y')
-        fig_valor = px.line(df_mes_valor, x="data", y="valor_total", markers=True, title="Evolução de Valor por Mês", color_discrete_sequence=["#1F77B4"])
-        st.plotly_chart(fig_valor, use_container_width=True)
-    # calcula preco medio por mes (necessário para narrativas e export)
-    preco_mes = dff.groupby(dff['data'].dt.to_period('M'))['preco_medio'].mean().reset_index()
-    preco_mes['data'] = preco_mes['data'].dt.strftime('%b/%y')
-
-    # Heatmap e dispersão
-    h1, h2 = st.columns(2)
-    with h1:
-        heat = dff.copy()
-        heat["mes"] = heat["data"].dt.strftime("%b/%y")
-        heat_pv = pd.pivot_table(heat, values="total_litros", index="combustivel", columns="mes", aggfunc="sum", fill_value=0)
-        fig_heat = px.imshow(heat_pv, aspect="auto", title="Heatmap - Litros por Combustível e Mês", labels=dict(color="Litros"))
-        st.plotly_chart(fig_heat, use_container_width=True)
-    with h2:
-        fig_scatter = px.scatter(dff, x="total_litros", y="valor_total", color="combustivel", size="valor_total", hover_data=["placa", "posto", "unidade", "setor"], title="Custo x Litros por Abastecimento")
-        st.plotly_chart(fig_scatter, use_container_width=True)
-
-    # ======================
-    # Narrativas inteligentes (mantidas + extras)
-    # ======================
-    st.markdown("### 🧠 Insights Automáticos")
-    try:
-        litros_por_placa = dff.groupby("placa")["total_litros"].sum()
-        maior_consumo = litros_por_placa.idxmax()
-        menor_consumo = litros_por_placa.idxmin()
-        st.markdown(f"- Veículo com **maior consumo**: **{maior_consumo}** ({litros_por_placa.max():,.2f} L).")
-        st.markdown(f"- Veículo com **menor consumo**: **{menor_consumo}** ({litros_por_placa.min():,.2f} L).")
-    except ValueError:
-        pass
-
-    st.markdown(f"- Total consumido: **{total_litros:,.2f} litros**.")
-    st.markdown(f"- Total gasto: **R$ {total_valor:,.2f}**.")
-    st.markdown(f"- Custo médio: **R$ {custo_medio_litro:.2f}/L**.")
-    if not preco_mes.empty:
-        ult = preco_mes["preco_medio"].iloc[-1]
-        st.markdown(f"- Preço médio do último mês analisado: **R$ {ult:.2f}/L**.")
-
-    # Projeção simples (próximo mês = média dos últimos 3 meses)
-    proj = None
-    if len(df_mes_valor) >= 1:
-        ultimos_3 = df_mes_valor.tail(3)["valor_total"]
-        if not ultimos_3.empty:
-            proj = float(ultimos_3.mean())
-            st.info(f"📈 Projeção de gasto para o próximo mês (média dos últimos 3): **R$ {proj:,.2f}**")
-
-    # ======================
-    # Exportações
-    # ======================
-    st.markdown("### 📤 Exportar dados filtrados")
-    colx1, colx2 = st.columns(2)
-    with colx1:
-        csv = dff.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Baixar CSV", data=csv, file_name="abastecimentos_filtrado.csv", mime="text/csv")
-    with colx2:
-        # Excel em memória com fallback para engines disponíveis (to_excel_bytes)
-        sheets = {"Dados": dff, "Litros_Mensal": df_mes_litros, "Valor_Mensal": df_mes_valor}
-        if preco_mes is not None:
-            sheets["Preco_Medio"] = preco_mes
-
-        excel_bytes, engine_used = to_excel_bytes(sheets)
-        if excel_bytes is not None:
-            st.download_button("⬇️ Baixar Excel", data=excel_bytes,
-                               file_name="abastecimentos_filtrado.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        else:
-            st.warning("Não foi possível gerar .xlsx (xlsxwriter/openpyxl não disponíveis). Use o CSV ou instale 'xlsxwriter' ou 'openpyxl'.")
-
-    st.markdown("### 📋 Tabela (dados filtrados)")
-    display_df = dff.copy()
-    # remove coluna Odometro se existir (normalização de nomes já feita para minusculas acima)
-    if 'odometro' in [c.lower() for c in display_df.columns]:
-        # busca a coluna original e remove
-        cols = display_df.columns.tolist()
-        cols = [c for c in cols if c.lower() != 'odometro']
-        display_df = display_df[cols]
-    st.dataframe(display_df.sort_values("data", ascending=False), use_container_width=True)
-
 def generate_request_pdf(payload: dict) -> bytes:
-    """
-    Gera PDF da requisição a partir do dict payload e retorna bytes.
-    Campos esperados: placa, justificativa, supervisor, setor, litros, combustivel, posto, solicitante, data
-    """
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib import colors
@@ -748,24 +204,24 @@ def generate_request_pdf(payload: dict) -> bytes:
     styles = getSampleStyleSheet()
     story = []
 
-    title = Paragraph("Requisição de Abastecimento", styles['Title'])
+    title = Paragraph("Requisição de Abastecimento - Frango Americano", styles['Title'])
     story.append(title)
     story.append(Spacer(1, 12))
 
     meta = [
-        ["Data:", payload.get("data", "")],
+        ["Data da Requisição:", payload.get("data", "")],
         ["Posto destino:", payload.get("posto", "")],
         ["Placa:", payload.get("placa", "")],
-        ["Motorista:", payload.get("motorista", "")],  # NOVO
+        ["Motorista:", payload.get("motorista", "")],
         ["Supervisor:", payload.get("supervisor", "")],
         ["Setor:", payload.get("setor", "")],
-        ["Quilometragem atual:", str(payload.get("km_atual", ""))],  # NOVO
-        ["Quantidade (L):", str(payload.get("litros", ""))],
+        ["Subsetor:", payload.get("subsetor", "")],
+        ["Quilometragem atual (no momento):", str(payload.get("km_atual", ""))],
+        ["Quantidade (L) / Tanque Cheio:", str(payload.get("litros", ""))],
         ["Combustível:", payload.get("combustivel", "")]
     ]
-    tbl = Table(meta, colWidths=[110, 380])
+    tbl = Table(meta, colWidths=[160, 330])
     tbl.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
         ('INNERGRID', (0,0), (-1,-1), 0.25, colors.grey),
         ('BOX', (0,0), (-1,-1), 0.5, colors.black),
         ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
@@ -774,7 +230,7 @@ def generate_request_pdf(payload: dict) -> bytes:
     story.append(tbl)
     story.append(Spacer(1, 16))
 
-    story.append(Paragraph("<b>Justificativa</b>", styles['Heading3']))
+    story.append(Paragraph("<b>Justificativa / Observações</b>", styles['Heading3']))
     justificativa = Paragraph(payload.get("justificativa", "").replace("\n","<br/>"), styles['Normal'])
     story.append(justificativa)
     story.append(Spacer(1, 24))
@@ -787,120 +243,307 @@ def generate_request_pdf(payload: dict) -> bytes:
     buffer.seek(0)
     return buffer.getvalue()
 
-def pagina_email():
-    st.header("✉️ Enviar Requisição de Abastecimento em PDF ao Posto")
-    st.info("Preencha os dados abaixo para gerar e enviar a ficha de requisição em PDF diretamente ao e-mail do posto selecionado.")
+# ===========================
+# Páginas (nova organização)
+# ===========================
+def pagina_requisicoes():
+    st.markdown("<div class='app-card title-bar'>", unsafe_allow_html=True)
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        if os.path.exists(LOGO_PATH):
+            st.image(LOGO_PATH, width=140)
+    with col2:
+        st.markdown("<h2 style='margin:0'>Requisição de abastecimento</h2>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#cfeefe'>Área principal de requisições — pesquisa, ações rápidas e criação</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    # Campos principais da requisição
-    with st.form("form_requisicao_pdf"):
-        st.subheader("Dados da Requisição")
+    # Topo: pesquisa e ações
+    topo_col1, topo_col2 = st.columns([3,1])
+    with topo_col1:
+        q = st.text_input("Pesquisar (ID, Placa, Condutor, Posto, Observações)", value="", key="pesquisa_reqs")
+    with topo_col2:
+        st.markdown("<div class='top-actions'>", unsafe_allow_html=True)
+        st.button("⚙️", key="top_icon_filter")
+        st.button("⬇️", key="top_icon_export")
+        st.button("🔁", key="top_icon_refresh")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            placa = st.text_input("Placa do veículo")
-            supervisor = st.text_input("Supervisor responsável")
-            setor = st.text_input("Setor")
-            motorista = st.text_input("Nome do motorista")  # NOVO
-            data_abastecimento = st.date_input("Data do abastecimento", value=datetime.today())  # NOVO
-            km_atual = st.number_input("Quilometragem atual", min_value=0, step=1)  # NOVO
-        with col2:
-            litros = st.number_input("Quantidade de litros", min_value=0.0, step=0.1)
-            combustivel = st.selectbox("Tipo de combustível", ["Gasolina", "Etanol", "Diesel S10", "Diesel S500", "GNV"])
-        
-        justificativa = st.text_area("Justificativa", height=100)
+    # Ações de estado no topo direito
+    ar1, ar2, ar3, ar4 = st.columns([1,1,1,1])
+    with ar1:
+        st.button("Cancelar", key="btn_cancelar", help="Marca seleção como Cancelado")
+    with ar2:
+        st.button("Em andamento", key="btn_andamento", help="Marca seleção como Em andamento")
+    with ar3:
+        if st.button("➕ Novo", key="btn_novo_requisicao"):
+            st.session_state["_novo_requisicao_open"] = True
+    with ar4:
+        st.button("📤 Enviar selecionados", key="btn_enviar_selecionados")
 
-        st.markdown("---")
-        st.subheader("Informações de E-mail")
+    st.markdown("---")
 
-        # Dados do remetente pré-preenchidos
-        nosso_email = st.text_input("Nosso Email (remetente)", value="paulodetarso.to@frangoamericano.com", disabled=True)
-        smtp_password = st.text_input("Senha do Email", value="", type="password", disabled=True)
-        smtp_server = st.text_input("Servidor SMTP", value="smtp-mail.outlook.com", disabled=True)
-        smtp_port = st.text_input("Porta SMTP", value="587", disabled=True)
-        st.markdown("Criptografia: **STARTTLS** (já configurado)")
+    # Carrega dados (fonte única: tabela abastecimentos)
+    conn = get_connection()
+    df = pd.read_sql("SELECT * FROM abastecimentos ORDER BY id DESC", conn)
+    conn.close()
 
-        # E-mail do posto (destinatário)
-        email_posto = st.text_input("E-mail do posto (destino)", value="", help="Digite o e-mail do posto que receberá a requisição.")
+    # Normalizações de colunas possíveis (compatibilidade com esquemas antigos)
+    df_columns = [c for c in df.columns]
+    for c in ["combustivel", "Combustivel"]:
+        if c in df_columns:
+            df['Combustivel'] = df[c].apply(normalize_combustivel)
+            break
+    # Garante colunas que exibiremos
+    display_cols = [
+        "Sel", "Acoes", "id", "data", "Placa", "Condutor", "Setor", "Subsetor",
+        "Quantidade", "Status", "Posto", "Observacoes", "DataUso", "KmUso"
+    ]
 
-        enviar = st.form_submit_button("Enviar Requisição em PDF")
+    if df.empty:
+        st.info("Nenhuma requisição registrada ainda.")
+    else:
+        # prepara colunas derivadas
+        df_display = df.copy()
+        # padroniza nomes
+        if 'data' in df_display.columns:
+            df_display['data'] = pd.to_datetime(df_display['data'], errors='coerce').dt.strftime("%Y-%m-%d")
+        else:
+            df_display['data'] = ""
 
-        if enviar:
-            # Validações
-            if not placa.strip():
-                st.error("Informe a placa do veículo.")
-            elif not supervisor.strip():
-                st.error("Informe o supervisor responsável.")
-            elif not setor.strip():
-                st.error("Informe o setor.")
-            elif litros <= 0:
-                st.error("Informe a quantidade de litros (maior que zero).")
-            elif not email_posto.strip():
-                st.error("Informe o e-mail do posto.")
-            else:
-                payload = {
-                    "data": data_abastecimento.strftime("%Y-%m-%d"),
-                    "posto": "",  # opcional
-                    "placa": placa.strip(),
-                    "supervisor": supervisor.strip(),
-                    "setor": setor.strip(),
-                    "motorista": motorista.strip(),  # NOVO
-                    "litros": litros,
-                    "combustivel": combustivel,
-                    "justificativa": justificativa.strip(),
-                    "solicitante": nosso_email,
-                    "km_atual": km_atual  # NOVO
-                }
-                try:
-                    pdf_bytes = generate_request_pdf(payload)
-                except Exception as e:
-                    st.error(f"Erro ao gerar PDF: {e}")
-                    pdf_bytes = None
+        df_display['Placa'] = df_display.get('Placa', "")
+        df_display['Condutor'] = df_display.get('Condutor', df_display.get('Condutor', ""))
+        df_display['Setor'] = df_display.get('Setor', "")
+        df_display['Subsetor'] = df_display.get('Subsetor', "")
+        # Quantidade: se TanqueCheio==1 mostra "Tanque cheio" senão total_litros
+        if 'TanqueCheio' in df_display.columns:
+            df_display['Quantidade'] = df_display.apply(lambda r: "Tanque cheio" if int(r.get('TanqueCheio') or 0) == 1 else str(r.get('total_litros') or ""), axis=1)
+        else:
+            df_display['Quantidade'] = df_display.get('total_litros', "")
 
-                if pdf_bytes:
-                    fname = f"requisicao_{placa.strip()}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
-                    smtp_conf = {
-                        'server': smtp_server,
-                        'port': int(smtp_port),
-                        'user': nosso_email.strip(),
-                        'password': smtp_password.strip(),
-                        'use_tls': True
-                    }
-                    subject = f"Requisição de Abastecimento - Placa {placa.strip()}"
-                    body = f"Prezados,\n\nSegue em anexo a requisição de abastecimento do veículo {placa.strip()}.\n\nAtenciosamente."
+        df_display['Status'] = df_display.get('Status', "")
+        df_display['Posto'] = df_display.get('Posto', "")
+        # Observações / justificativa: usa Observacoes ou Referente
+        df_display['Observacoes'] = df_display.apply(lambda r: r.get('Observacoes') or r.get('Referente') or "", axis=1)
+        df_display['DataUso'] = df_display.get('DataUso', "")
+        df_display['KmUso'] = df_display.get('KmUso', "")
 
-                    with st.spinner("Enviando e-mail com PDF..."):
-                        ok, err = send_email_smtp(
-                            to_address=email_posto.strip(),
-                            subject=subject,
-                            body=body,
-                            html_body=None,
-                            attachment_bytes=pdf_bytes,
-                            attachment_name=fname,
-                            smtp_config=smtp_conf
-                        )
-                    if ok:
-                        st.success("✅ Requisição enviada com sucesso ao posto!")
-                    else:
-                        st.error(f"Falha ao enviar: {err}")
+        # Aplica pesquisa simples
+        if q and q.strip():
+            ql = q.strip().lower()
+            mask = df_display.apply(lambda row: ql in str(row.to_dict()).lower(), axis=1)
+            df_display = df_display.loc[mask]
 
-# Menu
+        # Mostra tabela com linhas interativas (checkbox + ações)
+        st.markdown("#### Requisições")
+        # Cabeçalho da grade
+        header_cols = st.columns([0.06, 0.12, 0.06, 0.1, 0.12, 0.12, 0.09, 0.09, 0.09, 0.09, 0.1, 0.12])
+        headers = ["Sel", "Ações", "ID", "Data", "Placa", "Condutor", "Setor", "Subsetor", "Quantidade", "Status", "Posto", "Observações"]
+        for hc, h in zip(header_cols, headers):
+            hc.write(f"**{h}**")
+
+        # renderiza linhas (limitado a 200 para perfomance)
+        for idx, row in df_display.head(200).iterrows():
+            cols = st.columns([0.06, 0.12, 0.06, 0.1, 0.12, 0.12, 0.09, 0.09, 0.09, 0.09, 0.1, 0.12])
+            sel_key = f"sel_{row['id']}"
+            with cols[0]:
+                sel = st.checkbox("", key=sel_key)
+            with cols[1]:
+                # ações por linha
+                if st.button("👁️", key=f"view_{row['id']}"):
+                    st.session_state["_view_row"] = int(row['id'])
+                if st.button("📎", key=f"anx_{row['id']}"):
+                    st.info("Abrir anexos (não implementado).")
+                if st.button("✏️", key=f"edit_{row['id']}"):
+                    st.session_state["_edit_row"] = int(row['id'])
+            cols[2].write(str(row.get('id', '')))
+            cols[3].write(str(row.get('data', '')))
+            cols[4].write(str(row.get('Placa', '')))
+            cols[5].write(str(row.get('Condutor', '')))
+            cols[6].write(str(row.get('Setor', '')))
+            cols[7].write(str(row.get('Subsetor', '')))
+            cols[8].write(str(row.get('Quantidade', '')))
+            cols[9].write(str(row.get('Status', '')))
+            cols[10].write(str(row.get('Posto', '')))
+            cols[11].write(str(row.get('Observacoes', '')[:60]))
+
+        # Exibe ação rápida se usuário clicou visualizar/editar
+        if st.session_state.get("_view_row"):
+            rid = st.session_state.pop("_view_row")
+            conn = get_connection()
+            r = pd.read_sql(f"SELECT * FROM abastecimentos WHERE id = {int(rid)}", conn)
+            conn.close()
+            if not r.empty:
+                r0 = r.iloc[0].to_dict()
+                st.sidebar.markdown("### Visualizar Requisição")
+                for k, v in r0.items():
+                    st.sidebar.write(f"**{k}**: {v}")
+
+        if st.session_state.get("_edit_row"):
+            rid = st.session_state.pop("_edit_row")
+            conn = get_connection()
+            r = pd.read_sql(f"SELECT * FROM abastecimentos WHERE id = {int(rid)}", conn)
+            conn.close()
+            if not r.empty:
+                r0 = r.iloc[0].to_dict()
+                st.sidebar.markdown("### Editar Requisição")
+                with st.form("form_edit_row"):
+                    posto = st.text_input("Posto", value=r0.get('Posto',''))
+                    observ = st.text_area("Observações", value=r0.get('Observacoes') or r0.get('Referente',''))
+                    status = st.selectbox("Status", ["", "Pendente", "Em andamento", "Concluído", "Cancelado"], index=0)
+                    data_uso = st.date_input("Data de uso", value=datetime.today())
+                    km_uso = st.number_input("Quilometragem atual", min_value=0, step=1, value=int(r0.get('KmUso') or r0.get('Odometro') or 0))
+                    salvar = st.form_submit_button("Salvar Alterações")
+                    if salvar:
+                        conn = get_connection()
+                        c = conn.cursor()
+                        c.execute("""
+                            UPDATE abastecimentos
+                            SET Posto = ?, Observacoes = ?, Status = ?, DataUso = ?, KmUso = ?
+                            WHERE id = ?
+                        """, (posto, observ, status, data_uso.strftime("%Y-%m-%d"), km_uso, int(rid)))
+                        conn.commit()
+                        conn.close()
+                        st.success("Alterações salvas.")
+
+    st.markdown("---")
+    st.caption("Fonte: tabela 'abastecimentos' (todas as requisições) — cadastros automáticos são criados ao salvar uma nova requisição.")
+
+    # Novo formulário de requisição (quando acionado)
+    if st.session_state.get("_novo_requisicao_open"):
+        st.session_state["_novo_requisicao_open"] = False
+        st.markdown("### Nova Requisição")
+        with st.form("form_nova_req"):
+            colA, colB, colC = st.columns(3)
+            with colA:
+                placa = st.text_input("Placa")
+                condutor = st.text_input("Condutor")
+                setor = st.text_input("Setor")
+                subsetor = st.text_input("Subsetor")
+            with colB:
+                litros = st.number_input("Quantidade (L)", min_value=0.0, step=0.1)
+                tanque_cheio = st.checkbox("Tanque cheio")
+                combustivel = st.selectbox("Combustível", ["Gasolina", "Etanol", "Diesel S10", "Diesel S500", "GNV"])
+                posto = st.text_input("Posto")
+            with colC:
+                data_req = st.date_input("Data da requisição", value=datetime.today())
+                odometro = st.number_input("Odômetro atual", min_value=0, step=1)
+                referente = st.text_area("Observações / Justificativa", height=80)
+
+            submit = st.form_submit_button("Salvar Requisição")
+            if submit:
+                if not placa.strip():
+                    st.error("Placa é obrigatória.")
+                else:
+                    # Insere na tabela abastecimentos
+                    conn = get_connection()
+                    c = conn.cursor()
+                    combustivel_norm = normalize_combustivel(combustivel)
+                    c.execute("""
+                        INSERT INTO abastecimentos
+                        (Placa, valor_total, total_litros, data, Referente, Odometro, Posto, Combustivel, Condutor, Unidade, Setor, TanqueCheio, Subsetor, Observacoes, Status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        placa.strip(), 0.0, litros if not tanque_cheio else None,
+                        data_req.strftime("%Y-%m-%d"), referente.strip(), int(odometro),
+                        posto.strip(), combustivel_norm, condutor.strip(), "", setor.strip(),
+                        1 if tanque_cheio else 0, subsetor.strip(), referente.strip(), "Pendente"
+                    ))
+                    conn.commit()
+                    conn.close()
+
+                    # Garante cadastro automático na tabela cadastros
+                    conn = get_connection()
+                    c = conn.cursor()
+                    try:
+                        c.execute("""
+                            INSERT OR IGNORE INTO cadastros (Placa, Condutor, Unidade, Setor)
+                            VALUES (?, ?, ?, ?)
+                        """, (placa.strip(), condutor.strip(), "", setor.strip()))
+                        conn.commit()
+                    except Exception:
+                        pass
+                    conn.close()
+
+                    st.success("✅ Requisição salva e cadastro (se necessário) criado automaticamente.")
+
+def pagina_dashboard():
+    st.header("📊 Dashboard de Abastecimentos")
+    # reutiliza a lógica de visualização já implementada no arquivo original
+    conn = get_connection()
+    df = pd.read_sql("SELECT * FROM abastecimentos", conn)
+    conn.close()
+
+    if df.empty:
+        st.info("Nenhum dado registrado ainda.")
+        return
+
+    df.columns = [c.strip() for c in df.columns]
+    df['data'] = pd.to_datetime(df['data'], errors='coerce')
+    df = df.dropna(subset=['data'])
+    if 'Combustivel' in df.columns:
+        df['combustivel'] = df['Combustivel'].apply(normalize_combustivel)
+    elif 'combustivel' in df.columns:
+        df['combustivel'] = df['combustivel'].apply(normalize_combustivel)
+
+    # breve conjunto de KPIs para Dashboard (reduzido)
+    total_litros = float(df['total_litros'].sum()) if 'total_litros' in df.columns else 0.0
+    total_valor = float(df['valor_total'].sum()) if 'valor_total' in df.columns else 0.0
+    n_veiculos = int(df["Placa"].nunique()) if 'Placa' in df.columns else 0
+    k1, k2, k3 = st.columns(3)
+    with k1: st.metric("🚗 Veículos distintos", n_veiculos)
+    with k2: st.metric("🛢 Total de litros", f"{total_litros:,.2f}")
+    with k3: st.metric("💰 Valor total gasto", f"R$ {total_valor:,.2f}")
+
+    st.markdown("Gráficos e análises completos mantidos na versão anterior (Dashboard estendido).")
+
+def pagina_narrativas():
+    st.header("🧠 Narrativas")
+    st.info("Narrativas automáticas sobre consumo, tendências e anomalias.")
+    # exemplo simples usando últimas 30 requisições
+    conn = get_connection()
+    df = pd.read_sql("SELECT * FROM abastecimentos ORDER BY data DESC LIMIT 200", conn)
+    conn.close()
+    if df.empty:
+        st.info("Sem dados para gerar narrativas.")
+        return
+    df['data'] = pd.to_datetime(df['data'], errors='coerce')
+    total_litros = df['total_litros'].sum() if 'total_litros' in df.columns else 0
+    st.markdown(f"- Total de litros (últimos registros): **{total_litros:,.2f} L**")
+    placas = df['Placa'].value_counts().head(5).to_dict()
+    st.markdown("- Top 5 placas por número de requisições:")
+    for p, c in placas.items():
+        st.write(f"  - {p}: {c} requisições")
+
+def pagina_configuracoes():
+    st.header("⚙️ Configurações")
+    st.markdown("Opções disponíveis:")
+    st.write("- Ajuda")
+    st.write("- Contas")
+    st.write("- Preferências")
+    st.write("- Manuais")
+    st.markdown("---")
+    st.info("Configurações avançadas (SMTP, templates, integrações) podem ser adicionadas aqui.")
+
+# ===========================
+# Menu principal
 # ===========================
 def main():
+    st.sidebar.title("Frango Americano")
+    # Menu lateral com identidade azul (itens solicitados)
     menu = st.sidebar.radio(
         "Menu",
-        ["Início", "Cadastros", "Abastecimentos", "Dashboard", "Relatórios & E-mail"]
+        ["Requisições", "Dashboard", "Narrativas", "Configurações"],
+        index=0
     )
 
-    if menu == "Início":
-        pagina_inicio()
-    elif menu == "Cadastros":
-        pagina_cadastros()
-    elif menu == "Abastecimentos":
-        pagina_abastecimentos()
+    if menu == "Requisições":
+        pagina_requisicoes()
     elif menu == "Dashboard":
         pagina_dashboard()
-    elif menu == "Relatórios & E-mail":
-        pagina_email()
+    elif menu == "Narrativas":
+        pagina_narrativas()
+    elif menu == "Configurações":
+        pagina_configuracoes()
 
 if __name__ == "__main__":
     main()
