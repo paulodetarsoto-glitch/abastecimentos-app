@@ -2,9 +2,11 @@
 #  Abastecimentos de Veículos - Controle com IA e Gmail
 #  Autor: Paulo Varão (modificado por GitHub Copilot)
 #  Versão: Painel - Requisições como fonte única / remoção de uploads e aba de cadastros
+#  Atualizado: adiciona sidebar branca, logo, requisição teste, config real
 # =========================================================
 import os
 import io
+import json
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -14,10 +16,31 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # ===========================
-# Configurações iniciais
+# Configurações iniciais / settings
 # ===========================
 DB_PATH = "abastecimentos.db"
-LOGO_PATH = "LogoOriginal.png"  # Caminho do logo
+DEFAULT_LOGO_PATH = "LogoOriginal.png"
+SETTINGS_PATH = "settings.json"
+
+def load_settings():
+    if os.path.exists(SETTINGS_PATH):
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_settings(s):
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(s, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+_settings = load_settings()
+LOGO_PATH = _settings.get("logo_path", DEFAULT_LOGO_PATH)
 
 # (Streamlit exige que set_page_config seja o primeiro comando da página)
 st.set_page_config(page_title="Requisições de Abastecimento - Frango Americano", layout="wide", page_icon="⛽")
@@ -25,23 +48,37 @@ st.set_page_config(page_title="Requisições de Abastecimento - Frango Americano
 # ===========================
 # Estilos (tema ajustado)
 # ===========================
-CUSTOM_CSS = """
+CUSTOM_CSS = f"""
 <style>
-/* Fundo geral escuro para contraste com identidade azul */
-body { background: #07132a !important; color: #E6F0FF; }
+/* Fundo geral claro para contraste com identidade azul */
+body {{ background: #f5f7fa !important; color: #050505; }}
 
 /* Sidebar azul Frango Americano */
-[data-testid="stSidebar"] > div:first-child {
+[data-testid="stSidebar"] > div:first-child {{
     background: linear-gradient(180deg,#01263f,#003b63);
-    color: #fff;
-}
+    color: #fff !important;
+    padding-top: 12px;
+}}
 
-/* Logo/topo e cartões */
-.app-card { background: linear-gradient(180deg, rgba(7,19,42,0.6), rgba(4,12,24,0.6)); border-radius: 8px; padding: 12px; margin-bottom:12px; }
-.title-bar { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
-.top-actions > button { margin-left:8px; }
-.stButton>button { background: linear-gradient(90deg,#1F77B4,#00A3FF); color: white; border: none; }
-.table-actions button { margin-right:6px; }
+/* Força todos os textos dentro da sidebar para branco */
+[data-testid="stSidebar"] * {{
+    color: #fff !important;
+}}
+
+/* Centraliza a logo grande na sidebar */
+.sidebar-logo-wrapper {{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding: 8px 0 12px 0;
+}}
+
+/* Logo pequena nos cards */
+.app-card {{ background: linear-gradient(180deg, rgba(7,19,42,0.6), rgba(4,12,24,0.6)); border-radius: 8px; padding: 12px; margin-bottom:12px; }}
+.title-bar {{ display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }}
+.top-actions > button {{ margin-left:8px; }}
+.stButton>button {{ background: linear-gradient(90deg,#1F77B4,#00A3FF); color: white; border: none; }}
+.table-actions button {{ margin-right:6px; }}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -104,7 +141,9 @@ def init_db():
         'Observacoes': "TEXT",
         'TanqueCheio': "INTEGER",
         'DataUso': "TEXT",
-        'KmUso': "INTEGER"
+        'KmUso': "INTEGER",
+        'EmailPosto': "TEXT",
+        'TipoPosto': "TEXT"
     }
     for col, typ in extras.items():
         if col not in existing:
@@ -188,14 +227,14 @@ def send_email_smtp(to_address, subject, body=None, html_body=None, attachment_b
         return False, str(e)
 
 # ===========================
-# Geração de PDF (mantida)
+# Geração de PDF (mantida, agora inclui cabeçalho com data)
 # ===========================
 def generate_request_pdf(payload: dict) -> bytes:
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib import colors
-        from reportlab.lib.styles import getSampleStyleSheet
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
     except Exception as e:
         raise RuntimeError("reportlab não disponível: instale com `pip install reportlab`") from e
 
@@ -204,22 +243,49 @@ def generate_request_pdf(payload: dict) -> bytes:
     styles = getSampleStyleSheet()
     story = []
 
-    title = Paragraph("Requisição de Abastecimento - Frango Americano", styles['Title'])
+    # Se existir logo local, tenta adicionar pequena imagem ao cabeçalho (não obrigatória)
+    if payload.get("logo_path") and os.path.exists(payload["logo_path"]):
+        try:
+            img = Image(payload["logo_path"], width=100, height=40)
+            story.append(img)
+            story.append(Spacer(1, 8))
+        except Exception:
+            pass
+
+    # Cabeçalho com nome da empresa e data automática (momento da geração)
+    empresa = payload.get("empresa", "Frango Americano")
+    data_envio = datetime.now().strftime("%d/%m/%Y %H:%M")
+    header_style = ParagraphStyle('HeaderStyle', parent=styles['Title'], alignment=0, fontSize=14)
+    header = Paragraph(f"<b>{empresa}</b> — {data_envio}", header_style)
+    story.append(header)
+    story.append(Spacer(1, 12))
+
+    title = Paragraph("Requisição de Abastecimento", styles['Heading2'])
     story.append(title)
     story.append(Spacer(1, 12))
 
     meta = [
         ["Data da Requisição:", payload.get("data", "")],
         ["Posto destino:", payload.get("posto", "")],
+        ["E-mail do Posto:", payload.get("email_posto", "")],
+        ["Tipo de Posto:", payload.get("tipo_posto", "")],
         ["Placa:", payload.get("placa", "")],
         ["Motorista:", payload.get("motorista", "")],
         ["Supervisor:", payload.get("supervisor", "")],
         ["Setor:", payload.get("setor", "")],
         ["Subsetor:", payload.get("subsetor", "")],
-        ["Quilometragem atual (no momento):", str(payload.get("km_atual", ""))],
-        ["Quantidade (L) / Tanque Cheio:", str(payload.get("litros", ""))],
-        ["Combustível:", payload.get("combustivel", "")]
     ]
+
+    # Campos complementares aparecem apenas se houver valor preenchido
+    if payload.get("km_atual") not in (None, "", 0):
+        meta.append(["Quilometragem atual (no momento):", str(payload.get("km_atual", ""))])
+    if payload.get("litros") not in (None, ""):
+        meta.append(["Quantidade abastecida (L):", str(payload.get("litros", ""))])
+    if payload.get("valor_total") not in (None, "", 0):
+        meta.append(["Valor total:", f"R$ {float(payload.get('valor_total')):,.2f}"])
+    if payload.get("combustivel"):
+        meta.append(["Combustível:", payload.get("combustivel", "")])
+
     tbl = Table(meta, colWidths=[160, 330])
     tbl.setStyle(TableStyle([
         ('INNERGRID', (0,0), (-1,-1), 0.25, colors.grey),
@@ -231,7 +297,7 @@ def generate_request_pdf(payload: dict) -> bytes:
     story.append(Spacer(1, 16))
 
     story.append(Paragraph("<b>Justificativa / Observações</b>", styles['Heading3']))
-    justificativa = Paragraph(payload.get("justificativa", "").replace("\n","<br/>"), styles['Normal'])
+    justificativa = Paragraph((payload.get("justificativa") or "").replace("\n","<br/>"), styles['Normal'])
     story.append(justificativa)
     story.append(Spacer(1, 24))
 
@@ -244,17 +310,18 @@ def generate_request_pdf(payload: dict) -> bytes:
     return buffer.getvalue()
 
 # ===========================
-# Páginas (nova organização)
+# Páginas
 # ===========================
 def pagina_requisicoes():
     st.markdown("<div class='app-card title-bar'>", unsafe_allow_html=True)
     col1, col2 = st.columns([1, 3])
     with col1:
+        # pequena logo dentro do header do card
         if os.path.exists(LOGO_PATH):
             st.image(LOGO_PATH, width=140)
     with col2:
         st.markdown("<h2 style='margin:0'>Requisição de abastecimento</h2>", unsafe_allow_html=True)
-        st.markdown("<div style='color:#cfeefe'>Área principal de requisições — pesquisa, ações rápidas e criação</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#0f0f0f'>Área principal de requisições — pesquisa, ações rápidas e criação</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     # Topo: pesquisa e ações
@@ -293,62 +360,47 @@ def pagina_requisicoes():
         if c in df_columns:
             df['Combustivel'] = df[c].apply(normalize_combustivel)
             break
-    # Garante colunas que exibiremos
-    display_cols = [
-        "Sel", "Acoes", "id", "data", "Placa", "Condutor", "Setor", "Subsetor",
-        "Quantidade", "Status", "Posto", "Observacoes", "DataUso", "KmUso"
-    ]
 
+    # Exibição
     if df.empty:
         st.info("Nenhuma requisição registrada ainda.")
     else:
-        # prepara colunas derivadas
         df_display = df.copy()
-        # padroniza nomes
         if 'data' in df_display.columns:
             df_display['data'] = pd.to_datetime(df_display['data'], errors='coerce').dt.strftime("%Y-%m-%d")
         else:
             df_display['data'] = ""
-
         df_display['Placa'] = df_display.get('Placa', "")
         df_display['Condutor'] = df_display.get('Condutor', df_display.get('Condutor', ""))
         df_display['Setor'] = df_display.get('Setor', "")
         df_display['Subsetor'] = df_display.get('Subsetor', "")
-        # Quantidade: se TanqueCheio==1 mostra "Tanque cheio" senão total_litros
         if 'TanqueCheio' in df_display.columns:
             df_display['Quantidade'] = df_display.apply(lambda r: "Tanque cheio" if int(r.get('TanqueCheio') or 0) == 1 else str(r.get('total_litros') or ""), axis=1)
         else:
             df_display['Quantidade'] = df_display.get('total_litros', "")
-
         df_display['Status'] = df_display.get('Status', "")
         df_display['Posto'] = df_display.get('Posto', "")
-        # Observações / justificativa: usa Observacoes ou Referente
         df_display['Observacoes'] = df_display.apply(lambda r: r.get('Observacoes') or r.get('Referente') or "", axis=1)
         df_display['DataUso'] = df_display.get('DataUso', "")
         df_display['KmUso'] = df_display.get('KmUso', "")
 
-        # Aplica pesquisa simples
         if q and q.strip():
             ql = q.strip().lower()
             mask = df_display.apply(lambda row: ql in str(row.to_dict()).lower(), axis=1)
             df_display = df_display.loc[mask]
 
-        # Mostra tabela com linhas interativas (checkbox + ações)
         st.markdown("#### Requisições")
-        # Cabeçalho da grade
         header_cols = st.columns([0.06, 0.12, 0.06, 0.1, 0.12, 0.12, 0.09, 0.09, 0.09, 0.09, 0.1, 0.12])
         headers = ["Sel", "Ações", "ID", "Data", "Placa", "Condutor", "Setor", "Subsetor", "Quantidade", "Status", "Posto", "Observações"]
         for hc, h in zip(header_cols, headers):
             hc.write(f"**{h}**")
 
-        # renderiza linhas (limitado a 200 para perfomance)
         for idx, row in df_display.head(200).iterrows():
             cols = st.columns([0.06, 0.12, 0.06, 0.1, 0.12, 0.12, 0.09, 0.09, 0.09, 0.09, 0.1, 0.12])
             sel_key = f"sel_{row['id']}"
             with cols[0]:
                 sel = st.checkbox("", key=sel_key)
             with cols[1]:
-                # ações por linha
                 if st.button("👁️", key=f"view_{row['id']}"):
                     st.session_state["_view_row"] = int(row['id'])
                 if st.button("📎", key=f"anx_{row['id']}"):
@@ -366,7 +418,7 @@ def pagina_requisicoes():
             cols[10].write(str(row.get('Posto', '')))
             cols[11].write(str(row.get('Observacoes', '')[:60]))
 
-        # Exibe ação rápida se usuário clicou visualizar/editar
+        # Visualizar no sidebar
         if st.session_state.get("_view_row"):
             rid = st.session_state.pop("_view_row")
             conn = get_connection()
@@ -378,105 +430,144 @@ def pagina_requisicoes():
                 for k, v in r0.items():
                     st.sidebar.write(f"**{k}**: {v}")
 
-        if st.session_state.get("_edit_row"):
-            rid = st.session_state.pop("_edit_row")
-            conn = get_connection()
-            r = pd.read_sql(f"SELECT * FROM abastecimentos WHERE id = {int(rid)}", conn)
-            conn.close()
-            if not r.empty:
-                r0 = r.iloc[0].to_dict()
-                st.sidebar.markdown("### Editar Requisição")
-                with st.form("form_edit_row"):
-                    posto = st.text_input("Posto", value=r0.get('Posto',''))
-                    observ = st.text_area("Observações", value=r0.get('Observacoes') or r0.get('Referente',''))
-                    status = st.selectbox("Status", ["", "Pendente", "Em andamento", "Concluído", "Cancelado"], index=0)
-                    data_uso = st.date_input("Data de uso", value=datetime.today())
-                    km_uso = st.number_input("Quilometragem atual", min_value=0, step=1, value=int(r0.get('KmUso') or r0.get('Odometro') or 0))
-                    salvar = st.form_submit_button("Salvar Alterações")
-                    if salvar:
-                        conn = get_connection()
-                        c = conn.cursor()
-                        c.execute("""
-                            UPDATE abastecimentos
-                            SET Posto = ?, Observacoes = ?, Status = ?, DataUso = ?, KmUso = ?
-                            WHERE id = ?
-                        """, (posto, observ, status, data_uso.strftime("%Y-%m-%d"), km_uso, int(rid)))
-                        conn.commit()
-                        conn.close()
-                        st.success("Alterações salvas.")
-
     st.markdown("---")
-    st.caption("Fonte: tabela 'abastecimentos' (todas as requisições) — cadastros automáticos são criados ao salvar uma nova requisição.")
+    st.caption("Fonte: tabela 'abastecimentos' (todas as requisições) — cadastros automáticos são criados ao enviar uma nova requisição.")
 
     # Novo formulário de requisição (quando acionado)
     if st.session_state.get("_novo_requisicao_open"):
         st.session_state["_novo_requisicao_open"] = False
         st.markdown("### Nova Requisição")
         with st.form("form_nova_req"):
+            # Requisição teste no topo (impacta quais campos aparecem e o label do botão)
+            requisicao_teste = st.checkbox("Requisição teste - gerar PDF sem salvar", value=False)
+
             colA, colB, colC = st.columns(3)
             with colA:
                 placa = st.text_input("Placa")
                 condutor = st.text_input("Condutor")
                 setor = st.text_input("Setor")
                 subsetor = st.text_input("Subsetor")
+                # O campo de e-mail só aparece quando NÃO é requisição de teste
+                if not requisicao_teste:
+                    email_posto = st.text_input("E-mail do Posto")
+                else:
+                    email_posto = ""
             with colB:
-                litros = st.number_input("Quantidade (L)", min_value=0.0, step=0.1)
+                tipo_posto = st.selectbox("Tipo de Posto", ["Próprio", "Terceiro"])
+                litros = st.number_input("Quantidade (L)", min_value=0.0, step=0.1, value=0.0)
                 tanque_cheio = st.checkbox("Tanque cheio")
-                combustivel = st.selectbox("Combustível", ["Gasolina", "Etanol", "Diesel S10", "Diesel S500", "GNV"])
+                combustivel = st.selectbox("Combustível", ["Gasolina", "Etanol", "Diesel S10", "Diesel S500", "GNV", "Arla"])
                 posto = st.text_input("Posto")
             with colC:
                 data_req = st.date_input("Data da requisição", value=datetime.today())
-                odometro = st.number_input("Odômetro atual", min_value=0, step=1)
                 referente = st.text_area("Observações / Justificativa", height=80)
 
-            submit = st.form_submit_button("Salvar Requisição")
-            if submit:
+            # Label do botão muda conforme modo teste
+            button_label = "Emitir teste de requisição" if requisicao_teste else "Enviar requisição agora"
+            enviar = st.form_submit_button(button_label)
+            if enviar:
                 if not placa.strip():
                     st.error("Placa é obrigatória.")
                 else:
-                    # Insere na tabela abastecimentos
+                    combustivel_norm = normalize_combustivel(combustivel)
+                    # Monta payload para PDF
+                    payload = {
+                        "empresa": "Frango Americano",
+                        "logo_path": LOGO_PATH,
+                        "data": data_req.strftime("%Y-%m-%d"),
+                        "posto": posto.strip(),
+                        "email_posto": email_posto.strip(),
+                        "tipo_posto": tipo_posto,
+                        "placa": placa.strip(),
+                        "motorista": condutor.strip(),
+                        "supervisor": "",
+                        "setor": setor.strip(),
+                        "subsetor": subsetor.strip(),
+                        "litros": litros if not tanque_cheio else None,
+                        "valor_total": None,
+                        "km_atual": None,
+                        "combustivel": combustivel_norm,
+                        "justificativa": referente.strip(),
+                        "solicitante": condutor.strip()
+                    }
+
+                    pdf_bytes = generate_request_pdf(payload)
+
+                    if requisicao_teste:
+                        # Modo teste: NÃO salva no DB; apenas gera PDF para verificação
+                        st.success("✅ PDF de teste gerado (não salvo).")
+                        st.download_button(
+                            label="Download PDF (teste)",
+                            data=pdf_bytes,
+                            file_name=f"requisicao_teste_{placa.strip()}_{datetime.now().strftime('%Y%m%d%H%M')}.pdf",
+                            mime="application/pdf"
+                        )
+                    else:
+                        # Modo normal: salva na base marcando status como Enviada
+                        conn = get_connection()
+                        c = conn.cursor()
+                        try:
+                            c.execute("""
+                                INSERT INTO abastecimentos
+                                (Placa, valor_total, total_litros, data, Referente, Odometro, Posto, Combustivel, Condutor, Unidade, Setor, TanqueCheio, Subsetor, Observacoes, Status, EmailPosto, TipoPosto)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                placa.strip(), 0.0, litros if not tanque_cheio else None,
+                                data_req.strftime("%Y-%m-%d"), referente.strip(), None,
+                                posto.strip(), combustivel_norm, condutor.strip(), "", setor.strip(),
+                                1 if tanque_cheio else 0, subsetor.strip(), referente.strip(), "Enviada",
+                                email_posto.strip(), tipo_posto
+                            ))
+                            conn.commit()
+                        except Exception as e:
+                            st.error(f"Erro ao salvar: {e}")
+                        finally:
+                            conn.close()
+
+                        st.success("✅ Requisição enviada e salva. Agora você pode complementar os dados do abastecimento.")
+                        st.download_button(
+                            label="Download PDF (enviada)",
+                            data=pdf_bytes,
+                            file_name=f"requisicao_{placa.strip()}_{datetime.now().strftime('%Y%m%d%H%M')}.pdf",
+                            mime="application/pdf"
+                        )
+
+    # ...edição dos campos complementares após envio...
+    if st.session_state.get("_edit_row"):
+        rid = st.session_state.pop("_edit_row")
+        conn = get_connection()
+        r = pd.read_sql(f"SELECT * FROM abastecimentos WHERE id = {int(rid)}", conn)
+        conn.close()
+        if not r.empty:
+            r0 = r.iloc[0].to_dict()
+            st.sidebar.markdown("### Completar Abastecimento")
+            with st.form("form_edit_row"):
+                km_uso = st.number_input("Quilometragem atual", min_value=0, step=1, value=int(r0.get('KmUso') or r0.get('Odometro') or 0))
+                valor_total = st.number_input("Valor total (R$)", min_value=0.0, step=0.01, value=float(r0.get('valor_total') or 0.0))
+                quantidade_abastecida = st.number_input("Quantidade abastecida (L)", min_value=0.0, step=0.01, value=float(r0.get('total_litros') or 0.0))
+                salvar = st.form_submit_button("Salvar informações")
+                if salvar:
                     conn = get_connection()
                     c = conn.cursor()
-                    combustivel_norm = normalize_combustivel(combustivel)
                     c.execute("""
-                        INSERT INTO abastecimentos
-                        (Placa, valor_total, total_litros, data, Referente, Odometro, Posto, Combustivel, Condutor, Unidade, Setor, TanqueCheio, Subsetor, Observacoes, Status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        placa.strip(), 0.0, litros if not tanque_cheio else None,
-                        data_req.strftime("%Y-%m-%d"), referente.strip(), int(odometro),
-                        posto.strip(), combustivel_norm, condutor.strip(), "", setor.strip(),
-                        1 if tanque_cheio else 0, subsetor.strip(), referente.strip(), "Pendente"
-                    ))
+                        UPDATE abastecimentos
+                        SET KmUso = ?, valor_total = ?, total_litros = ?
+                        WHERE id = ?
+                    """, (km_uso, valor_total, quantidade_abastecida, int(rid)))
                     conn.commit()
                     conn.close()
-
-                    # Garante cadastro automático na tabela cadastros
-                    conn = get_connection()
-                    c = conn.cursor()
-                    try:
-                        c.execute("""
-                            INSERT OR IGNORE INTO cadastros (Placa, Condutor, Unidade, Setor)
-                            VALUES (?, ?, ?, ?)
-                        """, (placa.strip(), condutor.strip(), "", setor.strip()))
-                        conn.commit()
-                    except Exception:
-                        pass
-                    conn.close()
-
-                    st.success("✅ Requisição salva e cadastro (se necessário) criado automaticamente.")
+                    st.success("Informações do abastecimento salvas.")
 
 def pagina_dashboard():
     st.header("📊 Dashboard de Abastecimentos")
-    # reutiliza a lógica de visualização já implementada no arquivo original
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=120)
     conn = get_connection()
     df = pd.read_sql("SELECT * FROM abastecimentos", conn)
     conn.close()
-
     if df.empty:
         st.info("Nenhum dado registrado ainda.")
         return
-
     df.columns = [c.strip() for c in df.columns]
     df['data'] = pd.to_datetime(df['data'], errors='coerce')
     df = df.dropna(subset=['data'])
@@ -484,8 +575,6 @@ def pagina_dashboard():
         df['combustivel'] = df['Combustivel'].apply(normalize_combustivel)
     elif 'combustivel' in df.columns:
         df['combustivel'] = df['combustivel'].apply(normalize_combustivel)
-
-    # breve conjunto de KPIs para Dashboard (reduzido)
     total_litros = float(df['total_litros'].sum()) if 'total_litros' in df.columns else 0.0
     total_valor = float(df['valor_total'].sum()) if 'valor_total' in df.columns else 0.0
     n_veiculos = int(df["Placa"].nunique()) if 'Placa' in df.columns else 0
@@ -493,13 +582,13 @@ def pagina_dashboard():
     with k1: st.metric("🚗 Veículos distintos", n_veiculos)
     with k2: st.metric("🛢 Total de litros", f"{total_litros:,.2f}")
     with k3: st.metric("💰 Valor total gasto", f"R$ {total_valor:,.2f}")
-
     st.markdown("Gráficos e análises completos mantidos na versão anterior (Dashboard estendido).")
 
 def pagina_narrativas():
     st.header("🧠 Narrativas")
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=120)
     st.info("Narrativas automáticas sobre consumo, tendências e anomalias.")
-    # exemplo simples usando últimas 30 requisições
     conn = get_connection()
     df = pd.read_sql("SELECT * FROM abastecimentos ORDER BY data DESC LIMIT 200", conn)
     conn.close()
@@ -516,20 +605,39 @@ def pagina_narrativas():
 
 def pagina_configuracoes():
     st.header("⚙️ Configurações")
-    st.markdown("Opções disponíveis:")
-    st.write("- Ajuda")
-    st.write("- Contas")
-    st.write("- Preferências")
-    st.write("- Manuais")
-    st.markdown("---")
-    st.info("Configurações avançadas (SMTP, templates, integrações) podem ser adicionadas aqui.")
-
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=120)
+    st.markdown("Preencha as configurações abaixo para SMTP, remetente e logo.")
+    settings = load_settings()
+    with st.form("form_settings"):
+        smtp_server = st.text_input("SMTP Server", value=settings.get("smtp_server", "smtp.gmail.com"))
+        smtp_port = st.number_input("SMTP Port", min_value=1, max_value=65535, value=int(settings.get("smtp_port", 587)))
+        smtp_user = st.text_input("SMTP User (e-mail remetente)", value=settings.get("smtp_user", ""))
+        smtp_password = st.text_input("SMTP Password (opcional)", value=settings.get("smtp_password", ""), type="password")
+        smtp_use_tls = st.checkbox("Usar TLS", value=settings.get("smtp_use_tls", True))
+        salvar = st.form_submit_button("Salvar configurações")
+        if salvar:
+            new = {
+                "smtp_server": smtp_server,
+                "smtp_port": smtp_port,
+                "smtp_user": smtp_user,
+                "smtp_password": smtp_password,
+                "smtp_use_tls": smtp_use_tls,
+            }
+            ok = save_settings(new)
 # ===========================
 # Menu principal
 # ===========================
 def main():
+    # Sidebar: logo grande e título (garante fonte branca)
+    if os.path.exists(LOGO_PATH):
+        try:
+            # método preferencial (gera menos problemas que file:// em muitas instalações)
+            st.sidebar.image(LOGO_PATH, width=220)
+        except Exception:
+            # fallback: tentar injetar html se image falhar
+            st.sidebar.markdown(f"<div class='sidebar-logo-wrapper'><img src='file://{os.path.abspath(LOGO_PATH)}' width='220' /></div>", unsafe_allow_html=True)
     st.sidebar.title("Frango Americano")
-    # Menu lateral com identidade azul (itens solicitados)
     menu = st.sidebar.radio(
         "Menu",
         ["Requisições", "Dashboard", "Narrativas", "Configurações"],
